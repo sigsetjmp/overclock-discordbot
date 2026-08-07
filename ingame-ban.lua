@@ -181,7 +181,7 @@ end
 
 log("Starting Overclock script (commandbarnum=" .. commandbarnum .. ", poll=" .. POLL_INTERVAL .. "s)")
 
-local alreadyFired = {}
+local wasOnline = {}
 local lastAnnouncementId = 0
 local lastCommandId = 0
 local currentMvp = nil
@@ -216,17 +216,19 @@ while true do
   iteration = iteration + 1
   log("--- tick " .. iteration .. " (" .. #Players:GetPlayers() .. " players online) ---")
 
-  -- 1) persistent bans
+  -- 1) persistent bans - re-ban any banned player on every fresh join
   local ok, banned = pcall(fetchBannedNames)
   if ok and banned then
+    local nowOnline = {}
     for _, player in ipairs(Players:GetPlayers()) do
       local name = player.Name
-      if banned[name] and not alreadyFired[name] then
+      nowOnline[name] = true
+      if banned[name] and not wasOnline[name] then
         fire(":ban " .. player.Name)
-        alreadyFired[name] = true
         log("Auto-banned " .. player.Name)
       end
     end
+    wasOnline = nowOnline
   else
     warn("[Overclock] tick " .. iteration .. ": fetchBannedNames error")
   end
