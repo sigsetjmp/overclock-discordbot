@@ -25,30 +25,36 @@ local function getRemote()
 end
 
 local function get(url)
+  local t0 = os.clock()
   local res = request({
     Url = url,
     Method = "GET",
+    Timeout = 2,
     Headers = {
       ["apikey"] = SUPABASE_ANON_KEY,
       ["Authorization"] = "Bearer " .. SUPABASE_ANON_KEY,
       ["Content-Type"] = "application/json",
     },
   })
+  local ms = math.floor((os.clock() - t0) * 1000)
   if not res then
-    warn("[Overclock] GET returned nil response: " .. url)
+    warn("[Overclock] GET (" .. ms .. "ms) nil response: " .. url)
     return nil
   end
   if not res.Success then
-    warn("[Overclock] GET failed (" .. tostring(res.StatusCode) .. "): " .. url)
+    warn("[Overclock] GET (" .. ms .. "ms) failed (" .. tostring(res.StatusCode) .. "): " .. url)
     return nil
   end
+  log("GET (" .. ms .. "ms): " .. url)
   return HttpService:JSONDecode(res.Body)
 end
 
 local function post(url, body)
+  local t0 = os.clock()
   local res = request({
     Url = url,
     Method = "POST",
+    Timeout = 2,
     Headers = {
       ["apikey"] = SUPABASE_ANON_KEY,
       ["Authorization"] = "Bearer " .. SUPABASE_ANON_KEY,
@@ -57,10 +63,12 @@ local function post(url, body)
     },
     Body = HttpService:JSONEncode(body),
   })
+  local ms = math.floor((os.clock() - t0) * 1000)
   if not res or not res.Success then
-    warn("[Overclock] POST failed (" .. tostring(res and res.StatusCode or "no response") .. "): " .. url)
+    warn("[Overclock] POST (" .. ms .. "ms) failed (" .. tostring(res and res.StatusCode or "no response") .. "): " .. url)
     return false
   end
+  log("POST (" .. ms .. "ms): " .. url)
   return true
 end
 
@@ -216,44 +224,7 @@ while true do
   iteration = iteration + 1
   log("--- tick " .. iteration .. " (" .. #Players:GetPlayers() .. " players online) ---")
 
-  -- 1) persistent bans - re-ban any banned player on every fresh join
-  local ok, banned = pcall(fetchBannedNames)
-  if ok and banned then
-    local nowOnline = {}
-    for _, player in ipairs(Players:GetPlayers()) do
-      local name = player.Name
-      nowOnline[name] = true
-      if banned[name] and not wasOnline[name] then
-        fire(":ban " .. player.Name)
-        log("Auto-banned " .. player.Name)
-      end
-    end
-    wasOnline = nowOnline
-  else
-    warn("[Overclock] tick " .. iteration .. ": fetchBannedNames error")
-  end
-
-  -- 2) announcements (once each)
-  local ok2, ann = pcall(fetchLatestAnnouncement)
-  if ok2 and ann and ann.id and ann.id > lastAnnouncementId then
-    log("New announcement id=" .. ann.id .. " (last=" .. lastAnnouncementId .. "), announcing")
-    fire(":announce " .. ann.text)
-    lastAnnouncementId = ann.id
-  elseif not ok2 then
-    warn("[Overclock] tick " .. iteration .. ": fetchLatestAnnouncement error")
-  end
-
-  -- 2b) command queue (one-off commands like flashbang)
-  local ok2b, cmd = pcall(fetchLatestCommand)
-  if ok2b and cmd and cmd.id and cmd.id > lastCommandId then
-    log("New command id=" .. cmd.id .. " (last=" .. lastCommandId .. "), firing")
-    fireSequence(cmd.command)
-    lastCommandId = cmd.id
-  elseif not ok2b then
-    warn("[Overclock] tick " .. iteration .. ": fetchLatestCommand error")
-  end
-
-  -- 3) live stats + MVP cape (all synced to the same tick)
+  -- 1) live stats + MVP cape posted FIRST so the board always gets fresh data
   local ok3, players, mvp = pcall(function()
     return collectPlayers()
   end)
@@ -279,7 +250,7 @@ while true do
       task.wait(COMMAND_DELAY)
     end
 
-    -- notify message runs on its own 60s timer
+    -- notify message runs on its own timer
     if os.time() - lastNotify >= NOTIFY_INTERVAL then
       local text = "TYPE IN CHAT FOR GUN/MAP CHANGE. Current Server MVP: " .. (mvp or "none")
       fire(":n " .. text)
@@ -300,6 +271,47 @@ while true do
     end
   else
     warn("[Overclock] tick " .. iteration .. ": collectPlayers error")
+  end
+
+  -- 2) persistent bans - every tick (re-ban banned players on fresh join)
+  local ok, banned = pcall(fetchBannedNames)
+  if ok and banned then
+    local nowOnline = {}
+    for _, player in ipairs(Players:GetPlayers()) do
+      local name = player.Name
+      nowOnline[name] = true
+      if banned[name] and not wasOnline[name] then
+        fire(":ban " .. player.Name)
+        log("Auto-banned " .. player.Name)
+      end
+    end
+    wasOnline = nowOnline
+  else
+    warn("[Overclock] tick " .. iteration .. ": fetchBannedNames error")
+  end
+
+  -- 3) announcements - every 6th tick (~30s pickup, enough for announcements)
+  if iteration % 6 == 1 then
+    local ok2, ann = pcall(fetchLatestAnnouncement)
+    if ok2 and ann and ann.id and ann.id > lastAnnouncementId then
+      log("New announcement id=" .. ann.id .. " (last=" .. lastAnnouncementId .. "), announcing")
+      fire(":announce " .. ann.text)
+      lastAnnouncementId = ann.id
+    elseif not ok2 then
+      warn("[Overclock] tick " .. iteration .. ": fetchLatestAnnouncement error")
+    end
+  end
+
+  -- 4) command queue - every 2nd tick (~10s pickup, flashbang etc.)
+  if iteration % 2 == 1 then
+    local ok2b, cmd = pcall(fetchLatestCommand)
+    if ok2b and cmd and cmd.id and cmd.id > lastCommandId then
+      log("New command id=" .. cmd.id .. " (last=" .. lastCommandId .. "), firing")
+      fireSequence(cmd.command)
+      lastCommandId = cmd.id
+    elseif not ok2b then
+      warn("[Overclock] tick " .. iteration .. ": fetchLatestCommand error")
+    end
   end
 
   task.wait(POLL_INTERVAL)
