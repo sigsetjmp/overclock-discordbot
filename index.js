@@ -132,7 +132,7 @@ function isOwner(roles) {
   return roles?.has(ROLES.OWNER);
 }
 
-async function resolveRobloxId(username) {
+async function resolveRobloxUser(username) {
   try {
     const res = await fetch('https://users.roblox.com/usernames/usernames', {
       method: 'POST',
@@ -142,9 +142,10 @@ async function resolveRobloxId(username) {
     if (!res.ok) return null;
     const data = await res.json();
     const row = data?.data?.[0];
-    return row?.id ? String(row.id) : null;
+    if (!row?.id) return null;
+    return { id: String(row.id), name: row.name };
   } catch (err) {
-    console.error('resolveRobloxId error:', err.message);
+    console.error('resolveRobloxUser error:', err.message);
     return null;
   }
 }
@@ -300,15 +301,17 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.deferReply();
 
-      let id = await resolveRobloxId(user);
+      const resolved = await resolveRobloxUser(user);
+      const name = resolved?.name ?? user;
+      const id = resolved?.id ?? null;
 
       if (sub === 'ban') {
         const { error } = await supabase
           .from('ingame_bans')
-          .upsert({ name: user, roblox_id: id, reason, banned_by: actor, banned_by_id: interaction.user.id }, { onConflict: 'name' });
+          .upsert({ name, roblox_id: id, reason, banned_by: actor, banned_by_id: interaction.user.id }, { onConflict: 'name' });
         if (error) { console.error('supabase insert error:', error.message); await interaction.editReply('DB error, try again.'); return; }
-        await logToDiscord(interaction.guild, `**"${user}"** (${id ?? 'unknown id'}) banned by **"${interaction.user.tag}"** for Reason: **"${reason}"**`);
-        await interaction.editReply(`Banned **${user}** in-game${id ? ` (id: ${id})` : ''} - ${reason}`);
+        await logToDiscord(interaction.guild, `**"${name}"** (${id ?? 'unknown id'}) banned by **"${interaction.user.tag}"** for Reason: **"${reason}"**`);
+        await interaction.editReply(`Banned **${name}** in-game${id ? ` (id: ${id})` : ''} - ${reason}`);
         return;
       }
 
@@ -316,19 +319,17 @@ client.on('interactionCreate', async (interaction) => {
         const { data: existing } = await supabase
           .from('ingame_bans')
           .select('name, roblox_id')
-          .eq('name', user)
+          .eq('name', name)
           .single();
-        if (existing) {
-          user = existing.name;
-          id = existing.roblox_id ?? id;
-        }
+        const target = existing?.name ?? name;
+        const targetId = existing?.roblox_id ?? id;
         const { error } = await supabase
           .from('ingame_bans')
           .delete()
-          .eq('name', user);
+          .eq('name', target);
         if (error) { console.error('supabase delete error:', error.message); await interaction.editReply('DB error, try again.'); return; }
-        await logToDiscord(interaction.guild, `**"${user}"** (${id ?? 'unknown id'}) unbanned by **"${interaction.user.tag}"**`);
-        await interaction.editReply(`Unbanned **${user}** in-game${id ? ` (id: ${id})` : ''}`);
+        await logToDiscord(interaction.guild, `**"${target}"** (${targetId ?? 'unknown id'}) unbanned by **"${interaction.user.tag}"**`);
+        await interaction.editReply(`Unbanned **${target}** in-game${targetId ? ` (id: ${targetId})` : ''}`);
         return;
       }
 
@@ -350,7 +351,7 @@ client.on('interactionCreate', async (interaction) => {
   if (commandName === 'banlist') {
     const { data, error } = await supabase
       .from('ingame_bans')
-      .select('name, roblox_id, reason, banned_by, created_at')
+      .select('name, roblox_id, reason, banned_by, banned_by_id, created_at')
       .order('created_at', { ascending: false });
 
     if (error) { console.error('supabase select error:', error.message); await interaction.reply({ content: 'DB error, try again.', ephemeral: true }); return; }
@@ -361,14 +362,14 @@ client.on('interactionCreate', async (interaction) => {
     }
 
 const lines = data.slice(0, 30).map((b, i) =>
-      `${i + 1}. **${b.name}**${b.roblox_id ? ` (id: ${b.roblox_id})` : ''} — ${b.reason} — by ${b.banned_by?.split(' ')[0] ?? 'unknown'} — <t:${Math.floor(new Date(b.created_at).getTime() / 1000)}>`
+      `${i + 1}. **${b.name}**${b.roblox_id ? ` (id: ${b.roblox_id})` : ''} — ${b.reason} — by ${b.banned_by_id ? `<@${b.banned_by_id}>` : 'unknown'} — <t:${Math.floor(new Date(b.created_at).getTime() / 1000)}>`
     );
     const embed = new EmbedBuilder()
       .setColor(0x2c2323)
       .setTitle(`In-game bans (${data.length}${data.length > 30 ? ', showing first 30' : ''})`)
       .setDescription(lines.join('\n'));
 
-    await interaction.reply({ content: '', ephemeral: true, embeds: [embed] });
+    await interaction.reply({ embeds: [embed] });
 
     return;
   }

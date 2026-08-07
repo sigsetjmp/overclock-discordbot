@@ -34,7 +34,7 @@ local function fetchBannedNames()
   local data = get(SUPABASE_URL .. "/rest/v1/ingame_bans?select=name")
   local names = {}
   if data then
-    for _, row in ipairs(data) do names[row.name:lower()] = true end
+    for _, row in ipairs(data) do names[row.name] = true end
   end
   return names
 end
@@ -51,7 +51,7 @@ while true do
   local ok, banned = pcall(fetchBannedNames)
   if ok and banned then
     for _, player in ipairs(Players:GetPlayers()) do
-      local name = player.Name:lower()
+      local name = player.Name
       if banned[name] and not alreadyFired[name] then
         pcall(function()
           getRemote():FireServer(commandbarnum, ":ban " .. player.Name)
