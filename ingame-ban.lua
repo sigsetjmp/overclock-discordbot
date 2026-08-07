@@ -7,7 +7,7 @@ local SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 local POLL_INTERVAL = 5 -- seconds between full syncs (bans/announcements/stats)
 local COMMAND_DELAY = 0.5 -- seconds between dependent commands (:uncape before :cape)
 local CAPE_REAPPLY_INTERVAL = 1 -- seconds; re-applies the cape to the current MVP in case they reset and lose it
-local NOTIFY_INTERVAL = 60 -- seconds between :n notify messages (separate from the sync)
+local NOTIFY_INTERVAL = 30 -- seconds between :n notify messages (separate from the sync)
 
 -- The command bar number changes every server update.
 -- Get it manually, then update commandbarnum here and re-execute.

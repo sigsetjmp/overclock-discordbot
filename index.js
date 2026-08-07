@@ -171,13 +171,19 @@ function formatStats(p) {
 }
 
 function formatPlayerList(list) {
-  let rows = list;
-  let extra = '';
-  if (rows.length > 20) {
-    extra = `\n+${rows.length - 20} more`;
-    rows = rows.slice(0, 20);
+  const lines = list.map(formatStats);
+  const MAX = 1000;
+  let value = '';
+  let kept = 0;
+  for (const line of lines) {
+    const candidate = kept === 0 ? line : value + '\n' + line;
+    if (candidate.length > MAX) break;
+    value = candidate;
+    kept++;
   }
-  return rows.map(formatStats).join('\n') + extra;
+  const rest = lines.length - kept;
+  if (rest > 0) value += (kept > 0 ? '\n' : '') + `+${rest} more`;
+  return value;
 }
 
 function liveEmbed(players, mvp) {
@@ -256,7 +262,7 @@ async function updateLiveBoard() {
     await msg.edit({ embeds: [liveEmbed(players, mvp)] });
     console.log(`[live] tick: msg=${msg.id} fresh=${players !== null} players=${players?.length ?? 0} mvp=${mvp ?? 'none'}`);
   } catch (err) {
-    console.error('[live] board error:', err.message);
+    console.error('[live] board error:', err.message, err.details ? `| details: ${JSON.stringify(err.details)}` : '');
   }
 }
 
