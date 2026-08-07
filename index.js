@@ -167,6 +167,16 @@ function formatStats(p) {
   return `**${p.name}** — Kills: ${p.kills} | Deaths: ${p.deaths} | Damage: ${p.damage} | Heal: ${p.heal}`;
 }
 
+function formatPlayerList(list) {
+  let rows = list;
+  let extra = '';
+  if (rows.length > 20) {
+    extra = `\n+${rows.length - 20} more`;
+    rows = rows.slice(0, 20);
+  }
+  return rows.map(formatStats).join('\n') + extra;
+}
+
 function liveEmbed(players, mvp) {
   const embed = new EmbedBuilder()
     .setColor(0x2c2323)
@@ -186,10 +196,10 @@ function liveEmbed(players, mvp) {
     sorted = sorted.filter((p) => p.name !== mvpEntry.name);
     embed.addFields(
       { name: 'Server MVP', value: formatStats(mvpEntry), inline: false },
-      { name: 'Players', value: sorted.map(formatStats).join('\n') || 'No other players', inline: false }
+      { name: 'Players', value: formatPlayerList(sorted) || 'No other players', inline: false }
     );
   } else {
-    embed.addFields({ name: 'Players', value: sorted.map(formatStats).join('\n') || 'No other players', inline: false });
+    embed.addFields({ name: 'Players', value: formatPlayerList(sorted) || 'No other players', inline: false });
   }
   return embed;
 }
@@ -199,9 +209,20 @@ async function ensureLiveMessage(channel) {
     const existing = await channel.messages.fetch(liveMsg.id).catch(() => null);
     if (existing) return existing;
   }
+  const found = await channel.messages
+    .fetch({ limit: 20 })
+    .then((msgs) => msgs.find((m) => m.author.id === client.user.id && m.embeds[0]?.title === 'Active Server Player List'))
+    .catch(() => null);
+  if (found) {
+    liveMsg = { id: found.id };
+    saveJSON(LIVE_MSG_FILE, liveMsg);
+    console.log(`[live] adopted existing board message ${found.id}`);
+    return found;
+  }
   const sent = await channel.send({ embeds: [liveEmbed(null, null)] });
   liveMsg = { id: sent.id };
   saveJSON(LIVE_MSG_FILE, liveMsg);
+  console.log(`[live] created board message ${sent.id}`);
   return sent;
 }
 
@@ -224,12 +245,15 @@ async function updateLiveBoard() {
         if (age < LIVE_STALE_MS / 1000) {
           players = parsed.players;
           mvp = parsed.mvp ?? null;
+        } else {
+          console.log(`[live] data stale (${Math.round(age)}s) - showing disconnected`);
         }
       }
     }
     await msg.edit({ embeds: [liveEmbed(players, mvp)] });
+    console.log(`[live] tick: msg=${msg.id} fresh=${players !== null} players=${players?.length ?? 0} mvp=${mvp ?? 'none'}`);
   } catch (err) {
-    console.error('live board error:', err.message);
+    console.error('[live] board error:', err.message);
   }
 }
 
@@ -294,12 +318,17 @@ client.once('ready', async () => {
   client.user.setPresence({ activities: [], status: 'online' });
   console.log(`Logged in as ${client.user.tag}`);
 
-  await client.application.commands.set([]);
-  for (const guild of client.guilds.cache.values()) {
-    const cmds = await guild.commands.set(COMMANDS);
-    console.log(`Registered ${cmds.size} slash commands in ${guild.name}`);
+  try {
+    await client.application.commands.set([]);
+    for (const guild of client.guilds.cache.values()) {
+      const cmds = await guild.commands.set(COMMANDS);
+      console.log(`Registered ${cmds.size} slash commands in ${guild.name}`);
+    }
+  } catch (err) {
+    console.error('command registration error:', err.message);
   }
 
+  console.log(`[live] poller started for channel ${LIVE_CHANNEL}`);
   updateLiveBoard();
   setInterval(updateLiveBoard, LIVE_POLL_MS);
 });
