@@ -15,6 +15,10 @@ local commandbarnum = "12233232122KCmdBar"
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 
+local function log(msg)
+  print("[Overclock] " .. msg)
+end
+
 local function getRemote()
   return game:GetService("ReplicatedStorage")["b\007\010\007\010\007"]
 end
@@ -29,7 +33,14 @@ local function get(url)
       ["Content-Type"] = "application/json",
     },
   })
-  if not res or not res.Success then return nil end
+  if not res then
+    warn("[Overclock] GET returned nil response: " .. url)
+    return nil
+  end
+  if not res.Success then
+    warn("[Overclock] GET failed (" .. tostring(res.StatusCode) .. "): " .. url)
+    return nil
+  end
   return HttpService:JSONDecode(res.Body)
 end
 
@@ -45,30 +56,49 @@ local function post(url, body)
     },
     Body = HttpService:JSONEncode(body),
   })
-  return res and res.Success
+  if not res or not res.Success then
+    warn("[Overclock] POST failed (" .. tostring(res and res.StatusCode or "no response") .. "): " .. url)
+    return false
+  end
+  return true
 end
 
 local function fetchBannedNames()
   local data = get(SUPABASE_URL .. "/rest/v1/ingame_bans?select=name")
-  local names = {}
-  if data then
-    for _, row in ipairs(data) do names[row.name] = true end
+  if not data then
+    warn("[Overclock] fetchBannedNames: no data")
+    return {}
   end
+  local names = {}
+  for _, row in ipairs(data) do names[row.name] = true end
+  log("fetchBannedNames: " .. #data .. " bans loaded")
   return names
 end
 
 local function fetchLatestAnnouncement()
   local data = get(SUPABASE_URL .. "/rest/v1/ingame_announcements?select=id,text&order=id.desc&limit=1")
-  return data and data[1] or nil
+  if not data or not data[1] then
+    log("fetchLatestAnnouncement: none")
+    return nil
+  end
+  log("fetchLatestAnnouncement: id=" .. data[1].id .. " text=\"" .. data[1].text .. "\"")
+  return data[1]
 end
 
 local function fetchState()
   local data = get(SUPABASE_URL .. "/rest/v1/ingame_snapshot?select=data&id=eq.1")
-  if not data or not data[1] or not data[1].data then return nil end
+  if not data or not data[1] or not data[1].data then
+    log("fetchState: no snapshot row yet")
+    return nil
+  end
   local ok, parsed = pcall(function()
     return HttpService:JSONDecode(data[1].data)
   end)
-  if not ok then return nil end
+  if not ok then
+    warn("[Overclock] fetchState: failed to decode snapshot data")
+    return nil
+  end
+  log("fetchState: last_announced_id=" .. tostring(parsed.last_announced_id))
   return parsed
 end
 
@@ -76,7 +106,12 @@ local function readStat(player, name)
   local ls = player:FindFirstChild("leaderstats")
   if not ls then return 0 end
   local stat = ls:FindFirstChild(name)
-  return stat and tonumber(stat.Value) or 0
+  if not stat then
+    warn("[Overclock] readStat: " .. player.Name .. " has no \"" .. name .. "\" stat")
+    return 0
+  end
+  local v = tonumber(stat.Value)
+  return v or 0
 end
 
 local function collectPlayers()
@@ -103,16 +138,25 @@ local function collectPlayers()
   end
   -- MVP only if one player is strictly ahead with at least 1 kill
   if tied or mvpKills < 1 then
+    log("collectPlayers: " .. #list .. " players, mvp=none (tied=" .. tostring(tied) .. ", topKills=" .. mvpKills .. ")")
     return list, nil
   end
+  log("collectPlayers: " .. #list .. " players, mvp=" .. mvp .. " (" .. mvpKills .. " kills)")
   return list, mvp
 end
 
 local function fire(cmd)
-  pcall(function()
+  local ok, err = pcall(function()
     getRemote():FireServer(commandbarnum, cmd)
   end)
+  if ok then
+    log("fire: \"" .. cmd .. "\"")
+  else
+    warn("[Overclock] fire failed: " .. tostring(err))
+  end
 end
+
+log("Starting Overclock script (commandbarnum=" .. commandbarnum .. ", poll=" .. POLL_INTERVAL .. "s)")
 
 local alreadyFired = {}
 local lastAnnouncementId = 0
@@ -123,9 +167,14 @@ local lastNotify = 0
 local ok0, state = pcall(fetchState)
 if ok0 and state and state.last_announced_id then
   lastAnnouncementId = state.last_announced_id
+  log("Resumed lastAnnouncementId=" .. lastAnnouncementId)
 end
 
+local iteration = 0
 while true do
+  iteration = iteration + 1
+  log("--- tick " .. iteration .. " (" .. #Players:GetPlayers() .. " players online) ---")
+
   -- 1) persistent bans
   local ok, banned = pcall(fetchBannedNames)
   if ok and banned then
@@ -134,17 +183,21 @@ while true do
       if banned[name] and not alreadyFired[name] then
         fire(":ban " .. player.Name)
         alreadyFired[name] = true
-        print("[Overclock] Auto-banned " .. player.Name)
+        log("Auto-banned " .. player.Name)
       end
     end
+  else
+    warn("[Overclock] tick " .. iteration .. ": fetchBannedNames error")
   end
 
   -- 2) announcements (once each)
   local ok2, ann = pcall(fetchLatestAnnouncement)
   if ok2 and ann and ann.id and ann.id > lastAnnouncementId then
+    log("New announcement id=" .. ann.id .. " (last=" .. lastAnnouncementId .. "), announcing")
     fire(":announce " .. ann.text)
     lastAnnouncementId = ann.id
-    print("[Overclock] Announced: " .. ann.text)
+  elseif not ok2 then
+    warn("[Overclock] tick " .. iteration .. ": fetchLatestAnnouncement error")
   end
 
   -- 3) live stats + MVP cape + MVP vip (all synced to the same tick)
@@ -155,32 +208,34 @@ while true do
     if mvp then
       if currentMvp ~= mvp then
         if currentMvp then
+          log("Removing vip/cape from old MVP " .. currentMvp)
           fire(":untempvip " .. currentMvp)
           task.wait(COMMAND_DELAY)
           fire(":uncape " .. currentMvp)
           task.wait(COMMAND_DELAY)
-          print("[Overclock] Removed vip/cape from " .. currentMvp)
         end
+        log("Giving cape+vip to new MVP " .. mvp)
         fire(":cape " .. mvp)
         task.wait(COMMAND_DELAY)
         fire(":tempvip " .. mvp)
         task.wait(COMMAND_DELAY)
         currentMvp = mvp
-        print("[Overclock] Capped + vip'd " .. mvp)
       end
     elseif currentMvp then
+      log("No MVP anymore, removing vip/cape from " .. currentMvp)
       fire(":untempvip " .. currentMvp)
       task.wait(COMMAND_DELAY)
       fire(":uncape " .. currentMvp)
       task.wait(COMMAND_DELAY)
-      print("[Overclock] Removed vip/cape from " .. currentMvp)
       currentMvp = nil
     end
 
     -- notify message runs on its own 60s timer
     if os.time() - lastNotify >= NOTIFY_INTERVAL then
-      fire(":n TYPE IN CHAT FOR GUN/MAP CHANGE. Current Server MVP: " .. (mvp or "none"))
+      local text = "TYPE IN CHAT FOR GUN/MAP CHANGE. Current Server MVP: " .. (mvp or "none")
+      fire(":n " .. text)
       lastNotify = os.time()
+      log("Notified (mvp=" .. tostring(mvp) .. ")")
     end
 
     local ok4 = post(
@@ -189,9 +244,13 @@ while true do
         { id = 1, data = HttpService:JSONEncode({ players = players, mvp = mvp, ts = os.time(), last_announced_id = lastAnnouncementId }) },
       }
     )
-    if not ok4 then
+    if ok4 then
+      log("Snapshot posted: " .. #players .. " players, mvp=" .. tostring(mvp))
+    else
       warn("[Overclock] Failed to post live stats")
     end
+  else
+    warn("[Overclock] tick " .. iteration .. ": collectPlayers error")
   end
 
   task.wait(POLL_INTERVAL)
