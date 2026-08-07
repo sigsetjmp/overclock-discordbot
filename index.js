@@ -79,7 +79,7 @@ const COMMANDS = [
       {
         name: 'create', description: 'Open a ticket', type: ApplicationCommandOptionType.Subcommand,
         options: [
-          { name: 'type', description: 'Ticket type', type: ApplicationCommandOptionType.String, required: true, choices: [{ name: 'Appeal', value: 'appeal' }, { name: 'Other', value: 'other' }] },
+          { name: 'type', description: 'Ticket type', type: ApplicationCommandOptionType.String, required: true, choices: [{ name: 'Appeal', value: 'appeal' }, { name: 'Other', value: 'other' }, { name: 'Staff Application', value: 'staff' }] },
           { name: 'reason', description: 'Describe your issue', type: ApplicationCommandOptionType.String, required: true },
         ],
       },
@@ -237,8 +237,8 @@ async function createTicket(guild, user, type, reason) {
   if (!category || category.type !== ChannelType.GuildCategory) return null;
 
   const ticketId = String(Math.floor(100000 + Math.random() * 900000));
-  const typeSlug = type === 'appeal' ? 'appeal' : 'other';
-  const typeName = type === 'appeal' ? 'Appeal' : 'Other';
+  const typeSlug = type === 'appeal' ? 'appeal' : type === 'staff' ? 'staff-application' : 'other';
+  const typeName = type === 'appeal' ? 'Appeal' : type === 'staff' ? 'Staff Application' : 'Other';
 
   const channel = await guild.channels.create({
     name: `${typeSlug}-${ticketId}`,
@@ -252,6 +252,10 @@ async function createTicket(guild, user, type, reason) {
   });
 
   await channel.send(`<@&${TICKET_PING_ROLE}> Ticket opened by ${user}\n**Type:** ${typeName}\n**Reason:** ${reason}`);
+
+  if (type === 'staff') {
+    await channel.send(`**Staff Application - fill out the following format:**\n\nWhat is your Roblox username?\ntest\n\nWhat is your Discord username?\ntest\n\nHow did you find the server?\ntest\n\nWhy do you want to become OVERCLOCK staff?\ntest\n\nWhat would you bring to OVERCLOCK staff?\ntest\n\nHow long have you been playing futuretops?\ntest\n\nHow active are you on a scale of 1-10? (1= very inactive, 10= incredibly active)\ntest`);
+  }
 
   tickets[user.id] = { channelId: channel.id, type, reason, createdAt: new Date().toISOString() };
   saveJSON(TICKETS_FILE, tickets);
@@ -437,7 +441,7 @@ client.on('interactionCreate', async (interaction) => {
     if (error) { console.error('supabase select error:', error.message); await interaction.reply({ content: 'DB error, try again.', ephemeral: true }); return; }
 
     if (!data || data.length === 0) {
-      await interaction.reply({ content: 'No in-game bans yet.', ephemeral: true });
+      await interaction.reply({ content: 'No in-game bans yet.' });
       return;
     }
 
