@@ -19,6 +19,7 @@ const ROLES = {
 };
 
 const TICKET_PING_ROLE = '1535039121519542283';
+const SUPPORT_ROLE = '1535039121519542283';
 const TICKET_CATEGORY = '1535029532854194206';
 const LOG_CHANNEL = '1535028352157745162';
 const LIVE_CHANNEL = '1535265091099033720';
@@ -348,6 +349,10 @@ client.on('interactionCreate', async (interaction) => {
     const sub = interaction.options.getSubcommand();
 
     if (sub === 'create') {
+      if (!roles?.has(SUPPORT_ROLE)) {
+        await interaction.reply({ content: 'Only Support can open tickets.', ephemeral: true });
+        return;
+      }
       const type = interaction.options.getString('type', true);
       const reason = interaction.options.getString('reason', true);
 
@@ -363,7 +368,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (sub === 'close') {
-      if (!isOwner(roles)) { await interaction.reply({ content: 'No permission.', ephemeral: true }); return; }
+      if (!roles?.has(SUPPORT_ROLE)) { await interaction.reply({ content: 'Only Support can close tickets.', ephemeral: true }); return; }
       if (interaction.channel?.parentId !== TICKET_CATEGORY) {
         await interaction.reply({ content: 'Only in ticket channels.', ephemeral: true });
         return;
