@@ -6,6 +6,7 @@ local SUPABASE_URL = "https://xtolxhpirwwzaumntmis.supabase.co" -- Project Setti
 local SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh0b2x4aHBpcnd3emF1bW50bWlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYwOTA1NDEsImV4cCI6MjEwMTY2NjU0MX0.3tUydNTsM7pxU6ad8NRy6jsrQfWtNebw5SCO1ldWHZc" -- public anon key
 local POLL_INTERVAL = 5 -- seconds between full syncs (bans/announcements/stats)
 local COMMAND_DELAY = 0.5 -- seconds between dependent commands (:uncape before :cape)
+local CAPE_REAPPLY_INTERVAL = 1 -- seconds; re-applies the cape to the current MVP in case they reset and lose it
 local NOTIFY_INTERVAL = 60 -- seconds between :n notify messages (separate from the sync)
 
 -- The command bar number changes every server update.
@@ -199,6 +200,17 @@ if ok0 and state then
   end
 end
 
+-- re-apply the cape to the current MVP every second (they lose it on reset),
+-- so the cape is always on exactly one player: the MVP
+task.spawn(function()
+  while true do
+    task.wait(CAPE_REAPPLY_INTERVAL)
+    if currentMvp then
+      fire(":cape " .. currentMvp)
+    end
+  end
+end)
+
 local iteration = 0
 while true do
   iteration = iteration + 1
@@ -246,21 +258,23 @@ while true do
   if ok3 then
     if mvp then
       if currentMvp ~= mvp then
-        if currentMvp then
-          log("Removing cape from old MVP " .. currentMvp)
-          fire(":uncape " .. currentMvp)
+        local old = currentMvp
+        currentMvp = mvp
+        if old then
+          log("Removing cape from old MVP " .. old)
+          fire(":uncape " .. old)
           task.wait(COMMAND_DELAY)
         end
         log("Giving cape to new MVP " .. mvp)
         fire(":cape " .. mvp)
         task.wait(COMMAND_DELAY)
-        currentMvp = mvp
       end
     elseif currentMvp then
-      log("No MVP anymore, removing cape from " .. currentMvp)
-      fire(":uncape " .. currentMvp)
-      task.wait(COMMAND_DELAY)
+      local old = currentMvp
       currentMvp = nil
+      log("No MVP anymore, removing cape from " .. old)
+      fire(":uncape " .. old)
+      task.wait(COMMAND_DELAY)
     end
 
     -- notify message runs on its own 60s timer
