@@ -4,8 +4,9 @@
 -- Config:
 local SUPABASE_URL = "https://xtolxhpirwwzaumntmis.supabase.co" -- Project Settings > API
 local SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh0b2x4aHBpcnd3emF1bW50bWlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYwOTA1NDEsImV4cCI6MjEwMTY2NjU0MX0.3tUydNTsM7pxU6ad8NRy6jsrQfWtNebw5SCO1ldWHZc" -- public anon key
-local POLL_INTERVAL = 5 -- seconds
-local CAPE_DELAY = 1.2 -- seconds between :uncape and :cape so the game registers both
+local POLL_INTERVAL = 5 -- seconds between full syncs (bans/announcements/stats)
+local COMMAND_DELAY = 0.5 -- seconds between dependent commands (:uncape before :cape, :untempvip before :tempvip)
+local NOTIFY_INTERVAL = 60 -- seconds between :n notify messages (separate from the sync)
 
 -- The command bar number changes every server update.
 -- Get it manually, then update commandbarnum here and re-execute.
@@ -103,37 +104,10 @@ local function fire(cmd)
   end)
 end
 
--- Cape changes run in a background task so commands get spacing
--- and the 5s loop is never delayed.
-local capeBusy = false
-local function scheduleCape(old, new)
-  if capeBusy then return end
-  capeBusy = true
-  task.spawn(function()
-    if old and old ~= new then
-      fire(":uncape " .. old)
-      print("[Overclock] Uncaped " .. old)
-      task.wait(CAPE_DELAY)
-    end
-    fire(":cape " .. new)
-    print("[Overclock] Capped " .. new)
-    capeBusy = false
-  end)
-end
-
-local function scheduleUncape(name)
-  if capeBusy then return end
-  capeBusy = true
-  task.spawn(function()
-    fire(":uncape " .. name)
-    print("[Overclock] Uncaped " .. name)
-    capeBusy = false
-  end)
-end
-
 local alreadyFired = {}
 local lastAnnouncementId = 0
 local currentMvp = nil
+local lastNotify = 0
 
 while true do
   -- 1) persistent bans
@@ -157,23 +131,41 @@ while true do
     print("[Overclock] Announced: " .. ann.text)
   end
 
-  -- 3) live stats + MVP cape
+  -- 3) live stats + MVP cape + MVP vip (all synced to the same tick)
   local ok3, players, mvp = pcall(function()
     return collectPlayers()
   end)
   if ok3 then
     if mvp then
       if currentMvp ~= mvp then
-        scheduleCape(currentMvp, mvp)
+        if currentMvp then
+          fire(":untempvip " .. currentMvp)
+          task.wait(COMMAND_DELAY)
+          fire(":uncape " .. currentMvp)
+          task.wait(COMMAND_DELAY)
+          print("[Overclock] Removed vip/cape from " .. currentMvp)
+        end
+        fire(":cape " .. mvp)
+        task.wait(COMMAND_DELAY)
+        fire(":tempvip " .. mvp)
+        task.wait(COMMAND_DELAY)
         currentMvp = mvp
+        print("[Overclock] Capped + vip'd " .. mvp)
       end
     elseif currentMvp then
-      scheduleUncape(currentMvp)
+      fire(":untempvip " .. currentMvp)
+      task.wait(COMMAND_DELAY)
+      fire(":uncape " .. currentMvp)
+      task.wait(COMMAND_DELAY)
+      print("[Overclock] Removed vip/cape from " .. currentMvp)
       currentMvp = nil
     end
 
-    -- notify message fires every poll so it always matches current stats
-    fire(":n TYPE IN CHAT FOR GUN/MAP CHANGE. Current Server MVP: " .. (mvp or "none"))
+    -- notify message runs on its own 60s timer
+    if os.time() - lastNotify >= NOTIFY_INTERVAL then
+      fire(":n TYPE IN CHAT FOR GUN/MAP CHANGE. Current Server MVP: " .. (mvp or "none"))
+      lastNotify = os.time()
+    end
 
     local ok4 = post(
       SUPABASE_URL .. "/rest/v1/ingame_snapshot?on_conflict=id",
