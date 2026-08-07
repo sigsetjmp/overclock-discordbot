@@ -85,6 +85,15 @@ local function fetchLatestAnnouncement()
   return data[1]
 end
 
+local function fetchLatestCommand()
+  local data = get(SUPABASE_URL .. "/rest/v1/ingame_commands?select=id,command&order=id.desc&limit=1")
+  if not data or not data[1] then
+    return nil
+  end
+  log("fetchLatestCommand: id=" .. data[1].id .. " command=\"" .. data[1].command .. "\"")
+  return data[1]
+end
+
 local function fetchState()
   local data = get(SUPABASE_URL .. "/rest/v1/ingame_snapshot?select=data&id=eq.1")
   if not data or not data[1] or not data[1].data then
@@ -156,18 +165,38 @@ local function fire(cmd)
   end
 end
 
+-- fires "cmd|ms|cmd|ms" sequences from the command queue, e.g. ":freaky 255 255 255|1000|:freaky 0 0 0"
+local function fireSequence(seq)
+  for part in string.gmatch(seq, "[^|]+") do
+    local trimmed = part:gsub("^%s+", ""):gsub("%s+$", "")
+    local ms = tonumber(trimmed)
+    if ms then
+      task.wait(ms / 1000)
+    elseif #trimmed > 0 then
+      fire(trimmed)
+    end
+  end
+end
+
 log("Starting Overclock script (commandbarnum=" .. commandbarnum .. ", poll=" .. POLL_INTERVAL .. "s)")
 
 local alreadyFired = {}
 local lastAnnouncementId = 0
+local lastCommandId = 0
 local currentMvp = nil
 local lastNotify = 0
 
 -- resume from persisted state so restarts never replay old announcements
 local ok0, state = pcall(fetchState)
-if ok0 and state and state.last_announced_id then
-  lastAnnouncementId = state.last_announced_id
-  log("Resumed lastAnnouncementId=" .. lastAnnouncementId)
+if ok0 and state then
+  if state.last_announced_id then
+    lastAnnouncementId = state.last_announced_id
+    log("Resumed lastAnnouncementId=" .. lastAnnouncementId)
+  end
+  if state.last_command_id then
+    lastCommandId = state.last_command_id
+    log("Resumed lastCommandId=" .. lastCommandId)
+  end
 end
 
 local iteration = 0
@@ -198,6 +227,16 @@ while true do
     lastAnnouncementId = ann.id
   elseif not ok2 then
     warn("[Overclock] tick " .. iteration .. ": fetchLatestAnnouncement error")
+  end
+
+  -- 2b) command queue (one-off commands like flashbang)
+  local ok2b, cmd = pcall(fetchLatestCommand)
+  if ok2b and cmd and cmd.id and cmd.id > lastCommandId then
+    log("New command id=" .. cmd.id .. " (last=" .. lastCommandId .. "), firing")
+    fireSequence(cmd.command)
+    lastCommandId = cmd.id
+  elseif not ok2b then
+    warn("[Overclock] tick " .. iteration .. ": fetchLatestCommand error")
   end
 
   -- 3) live stats + MVP cape (all synced to the same tick)
@@ -235,7 +274,7 @@ while true do
     local ok4 = post(
       SUPABASE_URL .. "/rest/v1/ingame_snapshot?on_conflict=id",
       {
-        { id = 1, data = HttpService:JSONEncode({ players = players, mvp = mvp, ts = os.time(), last_announced_id = lastAnnouncementId }) },
+        { id = 1, data = HttpService:JSONEncode({ players = players, mvp = mvp, ts = os.time(), last_announced_id = lastAnnouncementId, last_command_id = lastCommandId }) },
       }
     )
     if ok4 then

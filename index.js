@@ -111,6 +111,9 @@ const COMMANDS = [
           { name: 'text', description: 'The announcement message', type: ApplicationCommandOptionType.String, required: true },
         ],
       },
+      {
+        name: 'flashbang', description: 'Flashbang the in-game server', type: ApplicationCommandOptionType.Subcommand,
+      },
     ],
   },
   {
@@ -465,6 +468,19 @@ client.on('interactionCreate', async (interaction) => {
       if (error) { console.error('supabase announcement error:', error.message); await interaction.editReply('DB error, try again.'); return; }
       await logToDiscord(interaction.guild, `Announcement by **"${interaction.user.tag}"**: **"${text}"**`);
       await interaction.editReply(`Announcement sent in-game: ${text}`);
+      return;
+    }
+
+    if (sub === 'flashbang') {
+      if (!canKick(roles)) { await interaction.reply({ content: 'No permission.', ephemeral: true }); return; }
+      await interaction.deferReply();
+      const command = ':freaky 255 255 255|1000|:freaky 0 0 0';
+      const { error } = await supabase
+        .from('ingame_commands')
+        .insert({ command });
+      if (error) { console.error('supabase flashbang error:', error.message); await interaction.editReply('DB error, try again.'); return; }
+      await logToDiscord(interaction.guild, `Flashbang triggered by **"${interaction.user.tag}"**`);
+      await interaction.editReply('Flashbang sent in-game.');
       return;
     }
   }

@@ -58,3 +58,20 @@ create policy "anon update ingame_snapshot"
   to anon
   using (true)
   with check (true);
+
+-- in-game command queue (bot inserts, Lua fires the newest one).
+-- command supports "|ms|" between parts for delays, e.g. ":freaky 255 255 255|1000|:freaky 0 0 0"
+create table if not exists public.ingame_commands (
+  id bigint generated always as identity primary key,
+  command text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.ingame_commands enable row level security;
+
+drop policy if exists "anon read ingame_commands" on public.ingame_commands;
+create policy "anon read ingame_commands"
+  on public.ingame_commands
+  for select
+  to anon
+  using (true);
