@@ -22,6 +22,7 @@ const TICKET_PING_ROLE = '1535039121519542283';
 const TICKET_CATEGORY = '1535029532854194206';
 const LOG_CHANNEL = '1535028352157745162';
 const LIVE_CHANNEL = '1535265091099033720';
+const SERVER_LINK = 'https://www.roblox.com/share?code=8a7cc21269b33242abf49c8e4e2b8dc5&type=Server';
 const TICKETS_FILE = path.join(__dirname, 'tickets.json');
 const LIVE_MSG_FILE = path.join(__dirname, 'live-msg.json');
 const LIVE_POLL_MS = 5000;
@@ -166,19 +167,29 @@ function formatStats(p) {
 }
 
 function liveEmbed(players, mvp) {
-  const embed = new EmbedBuilder().setColor(0x2c2323).setTitle('Active Server List');
-  if (!players || players.length === 0) {
-    embed.setDescription('Bot isn\'t connected');
+  const embed = new EmbedBuilder()
+    .setColor(0x2c2323)
+    .setTitle('Active Server Player List')
+    .setDescription(`**Join the server:** [Open Roblox Server](${SERVER_LINK})`);
+  if (!players) {
+    embed.addFields({ name: 'Status', value: 'Bot is not connected to the game server', inline: false });
     return embed;
   }
-  const sorted = [...players].sort((a, b) => b.kills - a.kills);
-  const m = mvp ?? sorted[0].name;
-  const mvpEntry = sorted.find((p) => p.name === m);
-  const rest = sorted.filter((p) => p.name !== m);
-  embed.addFields(
-    { name: 'Server MVP', value: mvpEntry ? formatStats(mvpEntry) : 'Unknown', inline: false },
-    { name: 'Players', value: rest.map(formatStats).join('\n') || 'No other players', inline: false }
-  );
+  if (players.length === 0) {
+    embed.addFields({ name: 'Status', value: 'No players in the server', inline: false });
+    return embed;
+  }
+  let sorted = [...players].sort((a, b) => b.kills - a.kills);
+  const mvpEntry = mvp ? sorted.find((p) => p.name === mvp) : undefined;
+  if (mvpEntry) {
+    sorted = sorted.filter((p) => p.name !== mvpEntry.name);
+    embed.addFields(
+      { name: 'Server MVP', value: formatStats(mvpEntry), inline: false },
+      { name: 'Players', value: sorted.map(formatStats).join('\n') || 'No other players', inline: false }
+    );
+  } else {
+    embed.addFields({ name: 'Players', value: sorted.map(formatStats).join('\n') || 'No other players', inline: false });
+  }
   return embed;
 }
 
