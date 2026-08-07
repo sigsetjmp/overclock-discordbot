@@ -19,3 +19,19 @@ create policy "anon read ingame_bans"
   for select
   to anon
   using (true);
+
+-- announcements (latest one is fetched by the Lua script)
+create table if not exists public.ingame_announcements (
+  id bigint generated always as identity primary key,
+  text text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.ingame_announcements enable row level security;
+
+drop policy if exists "anon read ingame_announcements" on public.ingame_announcements;
+create policy "anon read ingame_announcements"
+  on public.ingame_announcements
+  for select
+  to anon
+  using (true);

@@ -99,6 +99,12 @@ const COMMANDS = [
           { name: 'user', description: 'Roblox username', type: ApplicationCommandOptionType.String, required: true },
         ],
       },
+      {
+        name: 'announcement', description: 'Send an announcement to the in-game server', type: ApplicationCommandOptionType.Subcommand,
+        options: [
+          { name: 'text', description: 'The announcement message', type: ApplicationCommandOptionType.String, required: true },
+        ],
+      },
     ],
   },
   {
@@ -323,6 +329,19 @@ client.on('interactionCreate', async (interaction) => {
         if (error) { console.error('supabase delete error:', error.message); await interaction.editReply('DB error, try again.'); return; }
         await logToDiscord(interaction.guild, `**"${user}"** (${id ?? 'unknown id'}) unbanned by **"${interaction.user.tag}"**`);
         await interaction.editReply(`Unbanned **${user}** in-game${id ? ` (id: ${id})` : ''}`);
+        return;
+      }
+
+      if (sub === 'announcement') {
+        if (!canTimeout(roles)) { await interaction.reply({ content: 'No permission.', ephemeral: true }); return; }
+        const text = interaction.options.getString('text', true).trim();
+        await interaction.deferReply();
+        const { error } = await supabase
+          .from('ingame_announcements')
+          .insert({ text });
+        if (error) { console.error('supabase announcement error:', error.message); await interaction.editReply('DB error, try again.'); return; }
+        await logToDiscord(interaction.guild, `Announcement by **"${interaction.user.tag}"**: **"${text}"**`);
+        await interaction.editReply(`Announcement sent in-game: ${text}`);
         return;
       }
     }
