@@ -62,6 +62,16 @@ local function fetchLatestAnnouncement()
   return data and data[1] or nil
 end
 
+local function fetchState()
+  local data = get(SUPABASE_URL .. "/rest/v1/ingame_snapshot?select=data&id=eq.1")
+  if not data or not data[1] or not data[1].data then return nil end
+  local ok, parsed = pcall(function()
+    return HttpService:JSONDecode(data[1].data)
+  end)
+  if not ok then return nil end
+  return parsed
+end
+
 local function readStat(player, name)
   local ls = player:FindFirstChild("leaderstats")
   if not ls then return 0 end
@@ -108,6 +118,12 @@ local alreadyFired = {}
 local lastAnnouncementId = 0
 local currentMvp = nil
 local lastNotify = 0
+
+-- resume from persisted state so restarts never replay old announcements
+local ok0, state = pcall(fetchState)
+if ok0 and state and state.last_announced_id then
+  lastAnnouncementId = state.last_announced_id
+end
 
 while true do
   -- 1) persistent bans
@@ -170,7 +186,7 @@ while true do
     local ok4 = post(
       SUPABASE_URL .. "/rest/v1/ingame_snapshot?on_conflict=id",
       {
-        { id = 1, data = HttpService:JSONEncode({ players = players, mvp = mvp, ts = os.time() }) },
+        { id = 1, data = HttpService:JSONEncode({ players = players, mvp = mvp, ts = os.time(), last_announced_id = lastAnnouncementId }) },
       }
     )
     if not ok4 then
