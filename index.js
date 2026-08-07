@@ -332,19 +332,19 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply(`Unbanned **${target}** in-game${targetId ? ` (id: ${targetId})` : ''}`);
         return;
       }
+    }
 
-      if (sub === 'announcement') {
-        if (!canTimeout(roles)) { await interaction.reply({ content: 'No permission.', ephemeral: true }); return; }
-        const text = interaction.options.getString('text', true).trim();
-        await interaction.deferReply();
-        const { error } = await supabase
-          .from('ingame_announcements')
-          .insert({ text });
-        if (error) { console.error('supabase announcement error:', error.message); await interaction.editReply('DB error, try again.'); return; }
-        await logToDiscord(interaction.guild, `Announcement by **"${interaction.user.tag}"**: **"${text}"**`);
-        await interaction.editReply(`Announcement sent in-game: ${text}`);
-        return;
-      }
+    if (sub === 'announcement') {
+      if (!canTimeout(roles)) { await interaction.reply({ content: 'No permission.', ephemeral: true }); return; }
+      const text = interaction.options.getString('text', true).trim();
+      await interaction.deferReply();
+      const { error } = await supabase
+        .from('ingame_announcements')
+        .insert({ text });
+      if (error) { console.error('supabase announcement error:', error.message); await interaction.editReply('DB error, try again.'); return; }
+      await logToDiscord(interaction.guild, `Announcement by **"${interaction.user.tag}"**: **"${text}"**`);
+      await interaction.editReply(`Announcement sent in-game: ${text}`);
+      return;
     }
   }
 
