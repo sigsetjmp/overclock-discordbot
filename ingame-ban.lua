@@ -5,7 +5,7 @@
 local SUPABASE_URL = "https://xtolxhpirwwzaumntmis.supabase.co" -- Project Settings > API
 local SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh0b2x4aHBpcnd3emF1bW50bWlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYwOTA1NDEsImV4cCI6MjEwMTY2NjU0MX0.3tUydNTsM7pxU6ad8NRy6jsrQfWtNebw5SCO1ldWHZc" -- public anon key
 local POLL_INTERVAL = 5 -- seconds between full syncs (bans/announcements/stats)
-local COMMAND_DELAY = 0.5 -- seconds between dependent commands (:uncape before :cape, :untempvip before :tempvip)
+local COMMAND_DELAY = 0.5 -- seconds between dependent commands (:uncape before :cape)
 local NOTIFY_INTERVAL = 60 -- seconds between :n notify messages (separate from the sync)
 
 -- The command bar number changes every server update.
@@ -200,7 +200,7 @@ while true do
     warn("[Overclock] tick " .. iteration .. ": fetchLatestAnnouncement error")
   end
 
-  -- 3) live stats + MVP cape + MVP vip (all synced to the same tick)
+  -- 3) live stats + MVP cape (all synced to the same tick)
   local ok3, players, mvp = pcall(function()
     return collectPlayers()
   end)
@@ -208,23 +208,17 @@ while true do
     if mvp then
       if currentMvp ~= mvp then
         if currentMvp then
-          log("Removing vip/cape from old MVP " .. currentMvp)
-          fire(":untempvip " .. currentMvp)
-          task.wait(COMMAND_DELAY)
+          log("Removing cape from old MVP " .. currentMvp)
           fire(":uncape " .. currentMvp)
           task.wait(COMMAND_DELAY)
         end
-        log("Giving cape+vip to new MVP " .. mvp)
+        log("Giving cape to new MVP " .. mvp)
         fire(":cape " .. mvp)
-        task.wait(COMMAND_DELAY)
-        fire(":tempvip " .. mvp)
         task.wait(COMMAND_DELAY)
         currentMvp = mvp
       end
     elseif currentMvp then
-      log("No MVP anymore, removing vip/cape from " .. currentMvp)
-      fire(":untempvip " .. currentMvp)
-      task.wait(COMMAND_DELAY)
+      log("No MVP anymore, removing cape from " .. currentMvp)
       fire(":uncape " .. currentMvp)
       task.wait(COMMAND_DELAY)
       currentMvp = nil
