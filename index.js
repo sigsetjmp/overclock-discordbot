@@ -384,10 +384,6 @@ client.on('interactionCreate', async (interaction) => {
     const sub = interaction.options.getSubcommand();
 
     if (sub === 'create') {
-      if (!roles?.has(SUPPORT_ROLE)) {
-        await interaction.reply({ content: 'Only Support can open tickets.', ephemeral: true });
-        return;
-      }
       const type = interaction.options.getString('type', true);
       const reason = interaction.options.getString('reason', true);
 
