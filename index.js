@@ -254,7 +254,7 @@ async function createTicket(guild, user, type, reason) {
   await channel.send(`<@&${TICKET_PING_ROLE}> Ticket opened by ${user}\n**Type:** ${typeName}\n**Reason:** ${reason}`);
 
   if (type === 'staff') {
-    await channel.send(`**Staff Application - fill out the following format:**\n\nWhat is your Roblox username?\ntest\n\nWhat is your Discord username?\ntest\n\nHow did you find the server?\ntest\n\nWhy do you want to become OVERCLOCK staff?\ntest\n\nWhat would you bring to OVERCLOCK staff?\ntest\n\nHow long have you been playing futuretops?\ntest\n\nHow active are you on a scale of 1-10? (1= very inactive, 10= incredibly active)\ntest`);
+    await channel.send(`**Staff Application - fill out the following format:**\nWhat is your Roblox username?\nWhat is your Discord username?\nHow did you find the server?\nWhy do you want to become OVERCLOCK staff?\nWhat would you bring to OVERCLOCK staff?\nHow long have you been playing futuretops?\nHow active are you on a scale of 1-10? (1= very inactive, 10= incredibly active)`);
   }
 
   tickets[user.id] = { channelId: channel.id, type, reason, createdAt: new Date().toISOString() };
