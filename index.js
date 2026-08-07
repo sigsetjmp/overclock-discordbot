@@ -84,7 +84,7 @@ const COMMANDS = [
     ],
   },
   {
-    name: 'ingame', description: 'In-game ban management',
+    name: 'ingame', description: 'In-game command management',
     options: [
       {
         name: 'ban', description: 'Ban a Roblox player in-game', type: ApplicationCommandOptionType.Subcommand,
