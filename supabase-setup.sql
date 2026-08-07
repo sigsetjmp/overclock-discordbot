@@ -35,3 +35,26 @@ create policy "anon read ingame_announcements"
   for select
   to anon
   using (true);
+
+-- live stats snapshot (Lua posts single row id=1, bot reads it)
+create table if not exists public.ingame_snapshot (
+  id int primary key,
+  data jsonb not null
+);
+
+alter table public.ingame_snapshot enable row level security;
+
+drop policy if exists "anon write ingame_snapshot" on public.ingame_snapshot;
+create policy "anon write ingame_snapshot"
+  on public.ingame_snapshot
+  for insert
+  to anon
+  with check (true);
+
+drop policy if exists "anon update ingame_snapshot" on public.ingame_snapshot;
+create policy "anon update ingame_snapshot"
+  on public.ingame_snapshot
+  for update
+  to anon
+  using (true)
+  with check (true);

@@ -21,7 +21,11 @@ const ROLES = {
 const TICKET_PING_ROLE = '1535039121519542283';
 const TICKET_CATEGORY = '1535029532854194206';
 const LOG_CHANNEL = '1535028352157745162';
+const LIVE_CHANNEL = '1535265091099033720';
 const TICKETS_FILE = path.join(__dirname, 'tickets.json');
+const LIVE_MSG_FILE = path.join(__dirname, 'live-msg.json');
+const LIVE_POLL_MS = 5000;
+const LIVE_STALE_MS = 15000;
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
@@ -155,6 +159,68 @@ async function logToDiscord(guild, msg) {
   if (ch?.isTextBased()) await ch.send(msg);
 }
 
+let liveMsg = loadJSON(LIVE_MSG_FILE, null);
+
+function formatStats(p) {
+  return `**${p.name}** — Kills: ${p.kills} | Deaths: ${p.deaths} | Damage: ${p.damage} | Heal: ${p.heal}`;
+}
+
+function liveEmbed(players, mvp) {
+  const embed = new EmbedBuilder().setColor(0x2c2323).setTitle('Active Server List');
+  if (!players || players.length === 0) {
+    embed.setDescription('Bot isn\'t connected');
+    return embed;
+  }
+  const sorted = [...players].sort((a, b) => b.kills - a.kills);
+  const m = mvp ?? sorted[0].name;
+  const mvpEntry = sorted.find((p) => p.name === m);
+  const rest = sorted.filter((p) => p.name !== m);
+  embed.addFields(
+    { name: 'Server MVP', value: mvpEntry ? formatStats(mvpEntry) : 'Unknown', inline: false },
+    { name: 'Players', value: rest.map(formatStats).join('\n') || 'No other players', inline: false }
+  );
+  return embed;
+}
+
+async function ensureLiveMessage(channel) {
+  if (liveMsg?.id) {
+    const existing = await channel.messages.fetch(liveMsg.id).catch(() => null);
+    if (existing) return existing;
+  }
+  const sent = await channel.send({ embeds: [liveEmbed(null, null)] });
+  liveMsg = { id: sent.id };
+  saveJSON(LIVE_MSG_FILE, liveMsg);
+  return sent;
+}
+
+async function updateLiveBoard() {
+  const channel = client.channels.cache.get(LIVE_CHANNEL);
+  if (!channel?.isTextBased()) return;
+  try {
+    const msg = await ensureLiveMessage(channel);
+    const { data, error } = await supabase
+      .from('ingame_snapshot')
+      .select('data')
+      .eq('id', 1)
+      .single();
+    let players = null, mvp = null;
+    if (!error && data?.data) {
+      let parsed;
+      try { parsed = JSON.parse(data.data); } catch { parsed = null; }
+      if (parsed?.players && Array.isArray(parsed.players)) {
+        const age = Date.now() / 1000 - (parsed.ts ?? 0);
+        if (age < LIVE_STALE_MS / 1000) {
+          players = parsed.players;
+          mvp = parsed.mvp ?? null;
+        }
+      }
+    }
+    await msg.edit({ embeds: [liveEmbed(players, mvp)] });
+  } catch (err) {
+    console.error('live board error:', err.message);
+  }
+}
+
 async function createTicket(guild, user, type, reason) {
   const category = guild.channels.cache.get(TICKET_CATEGORY);
   if (!category || category.type !== ChannelType.GuildCategory) return null;
@@ -217,6 +283,9 @@ client.once('ready', async () => {
     const cmds = await guild.commands.set(COMMANDS);
     console.log(`Registered ${cmds.size} slash commands in ${guild.name}`);
   }
+
+  updateLiveBoard();
+  setInterval(updateLiveBoard, LIVE_POLL_MS);
 });
 
 client.on('interactionCreate', async (interaction) => {
