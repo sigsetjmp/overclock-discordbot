@@ -315,6 +315,7 @@ client.on('interactionCreate', async (interaction) => {
     const reason = interaction.options.getString('reason', true);
     try {
       await interaction.guild.members.ban(user, { reason });
+      await logToDiscord(interaction.guild, `**"${user.tag}"** (${user.id}) banned by **"${interaction.user.tag}"** - ${reason}`);
       await interaction.reply(`Banned ${user} - ${reason}`);
     } catch (err) { await interaction.reply(`Failed: ${err.message}`); }
     return;
@@ -327,6 +328,7 @@ client.on('interactionCreate', async (interaction) => {
     try {
       const member = await interaction.guild.members.fetch(user.id);
       await member.kick(reason);
+      await logToDiscord(interaction.guild, `**"${user.tag}"** (${user.id}) kicked by **"${interaction.user.tag}"** - ${reason}`);
       await interaction.reply(`Kicked ${user} - ${reason}`);
     } catch (err) { await interaction.reply(`Failed: ${err.message}`); }
     return;
@@ -340,6 +342,7 @@ client.on('interactionCreate', async (interaction) => {
     try {
       const member = await interaction.guild.members.fetch(user.id);
       await member.timeout(ms, reason);
+      await logToDiscord(interaction.guild, `**"${user.tag}"** (${user.id}) timed out for ${DUR_NAMES[ms] || ms + 'ms'} by **"${interaction.user.tag}"** - ${reason}`);
       await interaction.reply(`Timed out ${user} for ${DUR_NAMES[ms] || ms + 'ms'} - ${reason}`);
     } catch (err) { await interaction.reply(`Failed: ${err.message}`); }
     return;
