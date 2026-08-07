@@ -295,8 +295,7 @@ client.on('interactionCreate', async (interaction) => {
 
     if (sub === 'ban' || sub === 'unban') {
       if (!canBan(roles)) { await interaction.reply({ content: 'No permission.', ephemeral: true }); return; }
-      let user = interaction.options.getString('user', true).trim();
-      const reason = interaction.options.getString('reason', true).trim();
+      const user = interaction.options.getString('user', true).trim();
       const actor = `${interaction.user.tag} (${interaction.user.id})`;
 
       await interaction.deferReply();
@@ -306,6 +305,7 @@ client.on('interactionCreate', async (interaction) => {
       const id = resolved?.id ?? null;
 
       if (sub === 'ban') {
+        const reason = interaction.options.getString('reason', true).trim();
         const { error } = await supabase
           .from('ingame_bans')
           .upsert({ name, roblox_id: id, reason, banned_by: actor, banned_by_id: interaction.user.id }, { onConflict: 'name' });
