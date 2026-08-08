@@ -8,7 +8,6 @@ local WS_URL = "ws://217.156.65.201:3000/ws?token=85TRJDIO98UTDFIJOUR87YGFDUISUE
 local TICK_INTERVAL = 5 -- seconds between live stats posts (Discord board updates ~5s)
 local COMMAND_DELAY = 0.5 -- seconds between dependent commands (:uncape before :cape)
 local CAPE_REAPPLY_INTERVAL = 1 -- seconds; re-applies the cape to the current MVP in case they reset and lose it
-local NOTIFY_INTERVAL = 30 -- seconds between :n notify messages
 
 -- The command bar number changes every server update.
 -- Get it manually, then update commandbarnum here and re-execute.
@@ -34,7 +33,7 @@ local wasOnline = {}
 local lastAnnouncementId = 0
 local lastCommandId = 0
 local currentMvp = nil
-local lastNotify = 0
+local lastNotifiedMvp = nil
 
 local function fire(cmd)
   local ok, err = pcall(function()
@@ -244,11 +243,11 @@ while true do
       task.wait(COMMAND_DELAY)
     end
 
-    -- notify message runs on its own timer
-    if os.time() - lastNotify >= NOTIFY_INTERVAL then
+    -- notify only when the MVP changes (new MVP, or MVP removed)
+    if mvp ~= lastNotifiedMvp then
       local text = "TYPE IN CHAT FOR GUN/MAP CHANGE. Current Server MVP: " .. (mvp or "none")
       fire(":n " .. text)
-      lastNotify = os.time()
+      lastNotifiedMvp = mvp
       log("Notified (mvp=" .. tostring(mvp) .. ")")
     end
 
