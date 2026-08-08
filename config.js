@@ -22,7 +22,7 @@ module.exports = {
   TICKETS_FILE: path.join(__dirname, 'tickets.json'),
   LIVE_MSG_FILE: path.join(__dirname, 'live-msg.json'),
 
-  LIVE_POLL_MS: 10000,
+  LIVE_POLL_MS: 5000,
   LIVE_STALE_MS: 15000,
 
   DUR_NAMES: {
