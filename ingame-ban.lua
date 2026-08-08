@@ -1,17 +1,18 @@
 -- Overclock - in-game enforcement + live stats board
--- Polls Supabase for bans/announcements, posts live player stats,
--- manages the Server MVP cape (one cape always on the current MVP).
+-- Talks to the VPS API (api.js) for bans/announcements/commands and
+-- posts live player stats over REST. The Discord bot gets real-time
+-- updates via WebSocket from the same API.
 -- Config:
-local SUPABASE_URL = "https://xtolxhpirwwzaumntmis.supabase.co" -- Project Settings > API
-local SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh0b2x4aHBpcnd3emF1bW50bWlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYwOTA1NDEsImV4cCI6MjEwMTY2NjU0MX0.3tUydNTsM7pxU6ad8NRy6jsrQfWtNebw5SCO1ldWHZc" -- public anon key
-local POLL_INTERVAL = 5 -- seconds between full syncs (bans/announcements/stats)
+local BASE_URL = "http://YOUR_VPS_IP_OR_DOMAIN:3000" -- VPS address of the overclock API
+local API_TOKEN = "set-me" -- must match API_TOKEN in the VPS .env
+local POLL_INTERVAL = 3 -- seconds between full syncs (bans/announcements/stats)
 local COMMAND_DELAY = 0.5 -- seconds between dependent commands (:uncape before :cape)
 local CAPE_REAPPLY_INTERVAL = 1 -- seconds; re-applies the cape to the current MVP in case they reset and lose it
 local NOTIFY_INTERVAL = 30 -- seconds between :n notify messages (separate from the sync)
 
 -- The command bar number changes every server update.
 -- Get it manually, then update commandbarnum here and re-execute.
-local commandbarnum = "12233232122KCmdBar"
+local commandbarnum = "41111342434KCmdBar"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -31,9 +32,7 @@ local function get(url)
     Method = "GET",
     Timeout = 2,
     Headers = {
-      ["apikey"] = SUPABASE_ANON_KEY,
-      ["Authorization"] = "Bearer " .. SUPABASE_ANON_KEY,
-      ["Content-Type"] = "application/json",
+      ["x-api-token"] = API_TOKEN,
     },
   })
   local ms = math.floor((os.clock() - t0) * 1000)
@@ -56,10 +55,8 @@ local function post(url, body)
     Method = "POST",
     Timeout = 2,
     Headers = {
-      ["apikey"] = SUPABASE_ANON_KEY,
-      ["Authorization"] = "Bearer " .. SUPABASE_ANON_KEY,
+      ["x-api-token"] = API_TOKEN,
       ["Content-Type"] = "application/json",
-      ["Prefer"] = "resolution=merge-duplicates,return=minimal",
     },
     Body = HttpService:JSONEncode(body),
   })
@@ -73,7 +70,7 @@ local function post(url, body)
 end
 
 local function fetchBannedNames()
-  local data = get(SUPABASE_URL .. "/rest/v1/ingame_bans?select=name")
+  local data = get(BASE_URL .. "/bans")
   if not data then
     warn("[Overclock] fetchBannedNames: no data")
     return {}
@@ -85,32 +82,33 @@ local function fetchBannedNames()
 end
 
 local function fetchLatestAnnouncement()
-  local data = get(SUPABASE_URL .. "/rest/v1/ingame_announcements?select=id,text&order=id.desc&limit=1")
-  if not data or not data[1] then
+  local data = get(BASE_URL .. "/announcements/latest")
+  if not data or not data.id or data.id == 0 then
     log("fetchLatestAnnouncement: none")
     return nil
   end
-  log("fetchLatestAnnouncement: id=" .. data[1].id .. " text=\"" .. data[1].text .. "\"")
-  return data[1]
+  log("fetchLatestAnnouncement: id=" .. data.id .. " text=\"" .. data.text .. "\"")
+  return data
 end
 
 local function fetchLatestCommand()
-  local data = get(SUPABASE_URL .. "/rest/v1/ingame_commands?select=id,command&order=id.desc&limit=1")
-  if not data or not data[1] then
+  local data = get(BASE_URL .. "/commands/latest")
+  if not data or not data.id or data.id == 0 then
+    log("fetchLatestCommand: none")
     return nil
   end
-  log("fetchLatestCommand: id=" .. data[1].id .. " command=\"" .. data[1].command .. "\"")
-  return data[1]
+  log("fetchLatestCommand: id=" .. data.id .. " command=\"" .. data.command .. "\"")
+  return data
 end
 
 local function fetchState()
-  local data = get(SUPABASE_URL .. "/rest/v1/ingame_snapshot?select=data&id=eq.1")
-  if not data or not data[1] or not data[1].data then
-    log("fetchState: no snapshot row yet")
+  local data = get(BASE_URL .. "/snapshot")
+  if not data or not data.data then
+    log("fetchState: no snapshot yet")
     return nil
   end
   local ok, parsed = pcall(function()
-    return HttpService:JSONDecode(data[1].data)
+    return HttpService:JSONDecode(data.data)
   end)
   if not ok then
     warn("[Overclock] fetchState: failed to decode snapshot data")
@@ -259,10 +257,8 @@ while true do
     end
 
     local ok4 = post(
-      SUPABASE_URL .. "/rest/v1/ingame_snapshot?on_conflict=id",
-      {
-        { id = 1, data = HttpService:JSONEncode({ players = players, mvp = mvp, ts = os.time(), last_announced_id = lastAnnouncementId, last_command_id = lastCommandId }) },
-      }
+      BASE_URL .. "/snapshot",
+      HttpService:JSONEncode({ players = players, mvp = mvp, ts = os.time(), last_announced_id = lastAnnouncementId, last_command_id = lastCommandId })
     )
     if ok4 then
       log("Snapshot posted: " .. #players .. " players, mvp=" .. tostring(mvp))
@@ -290,8 +286,8 @@ while true do
     warn("[Overclock] tick " .. iteration .. ": fetchBannedNames error")
   end
 
-  -- 3) announcements - every 6th tick (~30s pickup, enough for announcements)
-  if iteration % 6 == 1 then
+  -- 3) announcements - every 10th tick (~30s pickup, enough for announcements)
+  if iteration % 10 == 1 then
     local ok2, ann = pcall(fetchLatestAnnouncement)
     if ok2 and ann and ann.id and ann.id > lastAnnouncementId then
       log("New announcement id=" .. ann.id .. " (last=" .. lastAnnouncementId .. "), announcing")
@@ -302,8 +298,8 @@ while true do
     end
   end
 
-  -- 4) command queue - every 2nd tick (~10s pickup, flashbang etc.)
-  if iteration % 2 == 1 then
+  -- 4) command queue - every 3rd tick (~9s pickup, flashbang etc.)
+  if iteration % 3 == 1 then
     local ok2b, cmd = pcall(fetchLatestCommand)
     if ok2b and cmd and cmd.id and cmd.id > lastCommandId then
       log("New command id=" .. cmd.id .. " (last=" .. lastCommandId .. "), firing")

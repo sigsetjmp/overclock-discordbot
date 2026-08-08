@@ -1,7 +1,3 @@
-require('dotenv').config();
-const fs = require('fs');
-const path = require('path');
-const { createClient } = require('@supabase/supabase-js');
 const {
   Client,
   GatewayIntentBits,
@@ -10,32 +6,11 @@ const {
   ChannelType,
   EmbedBuilder,
 } = require('discord.js');
-
-const ROLES = {
-  TRIAL_MOD: '1535026371523248348',
-  MOD: '1535025679756951673',
-  ADMIN: '1535025627055259740',
-  OWNER: '1535025513410728147',
-};
-
-const TICKET_PING_ROLE = '1535039121519542283';
-const SUPPORT_ROLE = '1535039121519542283';
-const TICKET_CATEGORY = '1535029532854194206';
-const LOG_CHANNEL = '1535028352157745162';
-const LIVE_CHANNEL = '1535265091099033720';
-const SERVER_LINK = 'https://www.roblox.com/share?code=8a7cc21269b33242abf49c8e4e2b8dc5&type=Server';
-const TICKETS_FILE = path.join(__dirname, 'tickets.json');
-const LIVE_MSG_FILE = path.join(__dirname, 'live-msg.json');
-const LIVE_POLL_MS = 5000;
-const LIVE_STALE_MS = 15000;
-
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
-
-const DUR_NAMES = {
-  60000: '60s', 300000: '5m', 600000: '10m', 1800000: '30m',
-  3600000: '1h', 7200000: '2h', 14400000: '4h', 28800000: '8h',
-  57600000: '16h', 86400000: '24h', 604800000: '1w',
-};
+const fs = require('fs');
+const cfg = require('./config');
+const { loadJSON, saveJSON } = require('./lib/store');
+const api = require('./lib/apiClient');
+const { LiveBoard } = require('./lib/live');
 
 const client = new Client({
   intents: [
@@ -45,6 +20,41 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
   ],
 });
+
+const tickets = loadJSON(cfg.TICKETS_FILE, {});
+
+function canTimeout(roles) {
+  return roles?.has(cfg.ROLES.TRIAL_MOD) || roles?.has(cfg.ROLES.MOD) || roles?.has(cfg.ROLES.ADMIN) || roles?.has(cfg.ROLES.OWNER);
+}
+function canKick(roles) {
+  return roles?.has(cfg.ROLES.MOD) || roles?.has(cfg.ROLES.ADMIN) || roles?.has(cfg.ROLES.OWNER);
+}
+function canBan(roles) {
+  return roles?.has(cfg.ROLES.ADMIN) || roles?.has(cfg.ROLES.OWNER);
+}
+
+async function resolveRobloxUser(username) {
+  try {
+    const res = await fetch('https://users.roblox.com/usernames/usernames', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ usernames: [username], excludeBannedUsers: false }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const row = data?.data?.[0];
+    if (!row?.id) return null;
+    return { id: String(row.id), name: row.name };
+  } catch (err) {
+    console.error('resolveRobloxUser error:', err.message);
+    return null;
+  }
+}
+
+async function logToDiscord(guild, msg) {
+  const ch = guild.channels.cache.get(cfg.LOG_CHANNEL);
+  if (ch?.isTextBased()) await ch.send(msg);
+}
 
 const COMMANDS = [
   {
@@ -121,153 +131,8 @@ const COMMANDS = [
   },
 ];
 
-function loadJSON(f, init) {
-  try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { fs.writeFileSync(f, JSON.stringify(init, null, 2)); return init; }
-}
-function saveJSON(f, d) { fs.writeFileSync(f, JSON.stringify(d, null, 2)); }
-
-const tickets = loadJSON(TICKETS_FILE, {});
-
-function canTimeout(roles) {
-  return roles?.has(ROLES.TRIAL_MOD) || roles?.has(ROLES.MOD) || roles?.has(ROLES.ADMIN) || roles?.has(ROLES.OWNER);
-}
-function canKick(roles) {
-  return roles?.has(ROLES.MOD) || roles?.has(ROLES.ADMIN) || roles?.has(ROLES.OWNER);
-}
-function canBan(roles) {
-  return roles?.has(ROLES.ADMIN) || roles?.has(ROLES.OWNER);
-}
-function isOwner(roles) {
-  return roles?.has(ROLES.OWNER);
-}
-
-async function resolveRobloxUser(username) {
-  try {
-    const res = await fetch('https://users.roblox.com/usernames/usernames', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ usernames: [username], excludeBannedUsers: false }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const row = data?.data?.[0];
-    if (!row?.id) return null;
-    return { id: String(row.id), name: row.name };
-  } catch (err) {
-    console.error('resolveRobloxUser error:', err.message);
-    return null;
-  }
-}
-
-async function logToDiscord(guild, msg) {
-  const ch = guild.channels.cache.get(LOG_CHANNEL);
-  if (ch?.isTextBased()) await ch.send(msg);
-}
-
-let liveMsg = loadJSON(LIVE_MSG_FILE, null);
-
-function formatStats(p) {
-  return `**${p.name}** — Kills: ${p.kills} | Deaths: ${p.deaths} | Damage: ${p.damage} | Heal: ${p.heal}`;
-}
-
-function formatPlayerList(list) {
-  const lines = list.map(formatStats);
-  const MAX = 1000;
-  let value = '';
-  let kept = 0;
-  for (const line of lines) {
-    const candidate = kept === 0 ? line : value + '\n' + line;
-    if (candidate.length > MAX) break;
-    value = candidate;
-    kept++;
-  }
-  const rest = lines.length - kept;
-  if (rest > 0) value += (kept > 0 ? '\n' : '') + `+${rest} more`;
-  return value;
-}
-
-function liveEmbed(players, mvp) {
-  const embed = new EmbedBuilder()
-    .setColor(0x2c2323)
-    .setTitle('Active Server Player List')
-    .setDescription(`**Join the server:** [Open Roblox Server](${SERVER_LINK})`);
-  if (!players) {
-    embed.addFields({ name: 'Status', value: 'Bot is not connected to the game server', inline: false });
-    return embed;
-  }
-  if (players.length === 0) {
-    embed.addFields({ name: 'Status', value: 'No players in the server', inline: false });
-    return embed;
-  }
-  let sorted = [...players].sort((a, b) => b.kills - a.kills);
-  const mvpEntry = mvp ? sorted.find((p) => p.name === mvp) : undefined;
-  if (mvpEntry) {
-    sorted = sorted.filter((p) => p.name !== mvpEntry.name);
-    embed.addFields(
-      { name: 'Server MVP', value: formatStats(mvpEntry), inline: false },
-      { name: 'Players', value: formatPlayerList(sorted) || 'No other players', inline: false }
-    );
-  } else {
-    embed.addFields({ name: 'Players', value: formatPlayerList(sorted) || 'No other players', inline: false });
-  }
-  return embed;
-}
-
-async function ensureLiveMessage(channel) {
-  if (liveMsg?.id) {
-    const existing = await channel.messages.fetch(liveMsg.id).catch(() => null);
-    if (existing) return existing;
-  }
-  const found = await channel.messages
-    .fetch({ limit: 20 })
-    .then((msgs) => msgs.find((m) => m.author.id === client.user.id && m.embeds[0]?.title === 'Active Server Player List'))
-    .catch(() => null);
-  if (found) {
-    liveMsg = { id: found.id };
-    saveJSON(LIVE_MSG_FILE, liveMsg);
-    console.log(`[live] adopted existing board message ${found.id}`);
-    return found;
-  }
-  const sent = await channel.send({ embeds: [liveEmbed(null, null)] });
-  liveMsg = { id: sent.id };
-  saveJSON(LIVE_MSG_FILE, liveMsg);
-  console.log(`[live] created board message ${sent.id}`);
-  return sent;
-}
-
-async function updateLiveBoard() {
-  const channel = client.channels.cache.get(LIVE_CHANNEL);
-  if (!channel?.isTextBased()) return;
-  try {
-    const msg = await ensureLiveMessage(channel);
-    const { data, error } = await supabase
-      .from('ingame_snapshot')
-      .select('data')
-      .eq('id', 1)
-      .single();
-    let players = null, mvp = null;
-    if (!error && data?.data) {
-      let parsed;
-      try { parsed = JSON.parse(data.data); } catch { parsed = null; }
-      if (parsed?.players && Array.isArray(parsed.players)) {
-        const age = Date.now() / 1000 - (parsed.ts ?? 0);
-        if (age < LIVE_STALE_MS / 1000) {
-          players = parsed.players;
-          mvp = parsed.mvp ?? null;
-        } else {
-          console.log(`[live] data stale (${Math.round(age)}s) - showing disconnected`);
-        }
-      }
-    }
-    await msg.edit({ embeds: [liveEmbed(players, mvp)] });
-    console.log(`[live] tick: msg=${msg.id} fresh=${players !== null} players=${players?.length ?? 0} mvp=${mvp ?? 'none'}`);
-  } catch (err) {
-    console.error('[live] board error:', err.message, err.details ? `| details: ${JSON.stringify(err.details)}` : '');
-  }
-}
-
 async function createTicket(guild, user, type, reason) {
-  const category = guild.channels.cache.get(TICKET_CATEGORY);
+  const category = guild.channels.cache.get(cfg.TICKET_CATEGORY);
   if (!category || category.type !== ChannelType.GuildCategory) return null;
 
   const ticketId = String(Math.floor(100000 + Math.random() * 900000));
@@ -285,14 +150,14 @@ async function createTicket(guild, user, type, reason) {
     ],
   });
 
-  await channel.send(`<@&${TICKET_PING_ROLE}> Ticket opened by ${user}\n**Type:** ${typeName}\n**Reason:** ${reason}`);
+  await channel.send(`<@&${cfg.TICKET_PING_ROLE}> Ticket opened by ${user}\n**Type:** ${typeName}\n**Reason:** ${reason}`);
 
   if (type === 'staff') {
     await channel.send(`**Staff Application - fill out the following format:**\nWhat is your Roblox username?\nWhat is your Discord username?\nHow did you find the server?\nWhy do you want to become OVERCLOCK staff?\nWhat would you bring to OVERCLOCK staff?\nHow long have you been playing futuretops?\nHow active are you on a scale of 1-10? (1= very inactive, 10= incredibly active)`);
   }
 
   tickets[user.id] = { channelId: channel.id, type, reason, createdAt: new Date().toISOString() };
-  saveJSON(TICKETS_FILE, tickets);
+  saveJSON(cfg.TICKETS_FILE, tickets);
 
   return { id: ticketId, channel };
 }
@@ -309,17 +174,17 @@ async function closeTicket(channel, closer, guild) {
     lastId = batch.last()?.id;
   }
 
-  const transcriptFile = path.join(__dirname, `transcript-${channel.id}.json`);
+  const transcriptFile = `${__dirname}/transcript-${channel.id}.json`;
   fs.writeFileSync(transcriptFile, JSON.stringify(msgs, null, 2));
 
-  const logChannel = guild.channels.cache.get(LOG_CHANNEL);
+  const logChannel = guild.channels.cache.get(cfg.LOG_CHANNEL);
   if (logChannel?.isTextBased()) {
     await logChannel.send({ content: `Ticket **${channel.name}** closed by ${closer.tag}`, files: [transcriptFile] });
   }
   fs.unlinkSync(transcriptFile);
 
   for (const [uid, d] of Object.entries(tickets)) { if (d.channelId === channel.id) { delete tickets[uid]; break; } }
-  saveJSON(TICKETS_FILE, tickets);
+  saveJSON(cfg.TICKETS_FILE, tickets);
   await channel.delete();
 }
 
@@ -337,9 +202,12 @@ client.once('ready', async () => {
     console.error('command registration error:', err.message);
   }
 
-  console.log(`[live] poller started for channel ${LIVE_CHANNEL}`);
-  updateLiveBoard();
-  setInterval(updateLiveBoard, LIVE_POLL_MS);
+  api.getBans()
+    .then((bans) => console.log(`[api] connected, ${bans.length} in-game bans loaded`))
+    .catch((err) => console.warn('[api] unavailable at startup:', err.message));
+
+  const live = new LiveBoard(client);
+  live.start();
 });
 
 client.on('interactionCreate', async (interaction) => {
@@ -380,8 +248,8 @@ client.on('interactionCreate', async (interaction) => {
     try {
       const member = await interaction.guild.members.fetch(user.id);
       await member.timeout(ms, reason);
-      await logToDiscord(interaction.guild, `**"${user.tag}"** (${user.id}) timed out for ${DUR_NAMES[ms] || ms + 'ms'} by **"${interaction.user.tag}"** - ${reason}`);
-      await interaction.reply(`Timed out ${user} for ${DUR_NAMES[ms] || ms + 'ms'} - ${reason}`);
+      await logToDiscord(interaction.guild, `**"${user.tag}"** (${user.id}) timed out for ${cfg.DUR_NAMES[ms] || ms + 'ms'} by **"${interaction.user.tag}"** - ${reason}`);
+      await interaction.reply(`Timed out ${user} for ${cfg.DUR_NAMES[ms] || ms + 'ms'} - ${reason}`);
     } catch (err) { await interaction.reply(`Failed: ${err.message}`); }
     return;
   }
@@ -405,8 +273,8 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (sub === 'close') {
-      if (!roles?.has(SUPPORT_ROLE)) { await interaction.reply({ content: 'Only Support can close tickets.', ephemeral: true }); return; }
-      if (interaction.channel?.parentId !== TICKET_CATEGORY) {
+      if (!roles?.has(cfg.SUPPORT_ROLE)) { await interaction.reply({ content: 'Only Support can close tickets.', ephemeral: true }); return; }
+      if (interaction.channel?.parentId !== cfg.TICKET_CATEGORY) {
         await interaction.reply({ content: 'Only in ticket channels.', ephemeral: true });
         return;
       }
@@ -432,28 +300,37 @@ client.on('interactionCreate', async (interaction) => {
 
       if (sub === 'ban') {
         const reason = interaction.options.getString('reason', true).trim();
-        const { error } = await supabase
-          .from('ingame_bans')
-          .upsert({ name, roblox_id: id, reason, banned_by: actor, banned_by_id: interaction.user.id }, { onConflict: 'name' });
-        if (error) { console.error('supabase insert error:', error.message); await interaction.editReply('DB error, try again.'); return; }
+        try {
+          await api.upsertBan({ name, roblox_id: id, reason, banned_by: actor, banned_by_id: interaction.user.id });
+        } catch (err) {
+          console.error('api ban error:', err.message);
+          await interaction.editReply('API error, try again.');
+          return;
+        }
         await logToDiscord(interaction.guild, `**"${name}"** (${id ?? 'unknown id'}) banned by **"${interaction.user.tag}"** for Reason: **"${reason}"**`);
         await interaction.editReply(`Banned **${name}** in-game${id ? ` (id: ${id})` : ''} - ${reason}`);
         return;
       }
 
       if (sub === 'unban') {
-        const { data: existing } = await supabase
-          .from('ingame_bans')
-          .select('name, roblox_id')
-          .eq('name', name)
-          .single();
+        let existing = null;
+        try {
+          const bans = await api.getBans();
+          existing = bans.find((b) => b.name.toLowerCase() === name.toLowerCase()) ?? null;
+        } catch (err) {
+          console.error('api getBans error:', err.message);
+          await interaction.editReply('API error, try again.');
+          return;
+        }
         const target = existing?.name ?? name;
         const targetId = existing?.roblox_id ?? id;
-        const { error } = await supabase
-          .from('ingame_bans')
-          .delete()
-          .eq('name', target);
-        if (error) { console.error('supabase delete error:', error.message); await interaction.editReply('DB error, try again.'); return; }
+        try {
+          await api.deleteBan(target);
+        } catch (err) {
+          console.error('api unban error:', err.message);
+          await interaction.editReply('API error, try again.');
+          return;
+        }
         await logToDiscord(interaction.guild, `**"${target}"** (${targetId ?? 'unknown id'}) unbanned by **"${interaction.user.tag}"**`);
         await interaction.editReply(`Unbanned **${target}** in-game${targetId ? ` (id: ${targetId})` : ''}`);
         return;
@@ -464,10 +341,13 @@ client.on('interactionCreate', async (interaction) => {
       if (!canTimeout(roles)) { await interaction.reply({ content: 'No permission.', ephemeral: true }); return; }
       const text = interaction.options.getString('text', true).trim();
       await interaction.deferReply();
-      const { error } = await supabase
-        .from('ingame_announcements')
-        .insert({ text });
-      if (error) { console.error('supabase announcement error:', error.message); await interaction.editReply('DB error, try again.'); return; }
+      try {
+        await api.postAnnouncement(text);
+      } catch (err) {
+        console.error('api announcement error:', err.message);
+        await interaction.editReply('API error, try again.');
+        return;
+      }
       await logToDiscord(interaction.guild, `Announcement by **"${interaction.user.tag}"**: **"${text}"**`);
       await interaction.editReply(`Announcement sent in-game: ${text}`);
       return;
@@ -476,11 +356,13 @@ client.on('interactionCreate', async (interaction) => {
     if (sub === 'flashbang') {
       if (!canKick(roles)) { await interaction.reply({ content: 'No permission.', ephemeral: true }); return; }
       await interaction.deferReply();
-      const command = ':freaky 255 255 255|1000|:freaky 0 0 0';
-      const { error } = await supabase
-        .from('ingame_commands')
-        .insert({ command });
-      if (error) { console.error('supabase flashbang error:', error.message); await interaction.editReply('DB error, try again.'); return; }
+      try {
+        await api.postCommand(':freaky 255 255 255|1000|:freaky 0 0 0');
+      } catch (err) {
+        console.error('api flashbang error:', err.message);
+        await interaction.editReply('API error, try again.');
+        return;
+      }
       await logToDiscord(interaction.guild, `Flashbang triggered by **"${interaction.user.tag}"**`);
       await interaction.editReply('Flashbang sent in-game.');
       return;
@@ -488,30 +370,39 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   if (commandName === 'banlist') {
-    const { data, error } = await supabase
-      .from('ingame_bans')
-      .select('name, roblox_id, reason, banned_by, banned_by_id, created_at')
-      .order('created_at', { ascending: false });
-
-    if (error) { console.error('supabase select error:', error.message); await interaction.reply({ content: 'DB error, try again.', ephemeral: true }); return; }
+    let data;
+    try {
+      data = await api.getBans();
+    } catch (err) {
+      console.error('api select error:', err.message);
+      await interaction.reply({ content: 'API error, try again.', ephemeral: true });
+      return;
+    }
 
     if (!data || data.length === 0) {
       await interaction.reply({ content: 'No in-game bans yet.' });
       return;
     }
 
-const lines = data.slice(0, 30).map((b, i) =>
-      `${i + 1}. **${b.name}**${b.roblox_id ? ` (id: ${b.roblox_id})` : ''} — ${b.reason} — by ${b.banned_by_id ? `<@${b.banned_by_id}>` : 'unknown'} — <t:${Math.floor(new Date(b.created_at).getTime() / 1000)}>`
-    );
+    const lines = data
+      .slice()
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+      .slice(0, 30)
+      .map((b, i) =>
+        `${i + 1}. **${b.name}**${b.roblox_id ? ` (id: ${b.roblox_id})` : ''} — ${b.reason} — by ${b.banned_by_id ? `<@${b.banned_by_id}>` : 'unknown'} — <t:${Math.floor(new Date(b.created_at).getTime() / 1000)}>`
+      );
     const embed = new EmbedBuilder()
       .setColor(0x2c2323)
       .setTitle(`In-game bans (${data.length}${data.length > 30 ? ', showing first 30' : ''})`)
       .setDescription(lines.join('\n'));
 
     await interaction.reply({ embeds: [embed] });
-
     return;
   }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+if (!cfg.DISCORD_TOKEN) {
+  console.error('FATAL: DISCORD_TOKEN not set in .env');
+  process.exit(1);
+}
+client.login(cfg.DISCORD_TOKEN);
