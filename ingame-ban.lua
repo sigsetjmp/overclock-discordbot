@@ -1,14 +1,14 @@
--- Overclock - in-game enforcement + live stats board
--- Talks to the VPS API (api.js) for bans/announcements/commands and
--- posts live player stats over REST. The Discord bot gets real-time
--- updates via WebSocket from the same API.
+-- Overclock - in-game enforcement + live stats board (WebSocket)
+-- Connects to the VPS api.js over WebSocket:
+--   * pushes live player stats every TICK_INTERVAL (board updates ~5s)
+--   * receives bans / announcements / commands instantly via push
+--   * manages the Server MVP cape (re-applied every second)
 -- Config:
-local BASE_URL = "http://YOUR_VPS_IP_OR_DOMAIN:3000" -- VPS address of the overclock API
-local API_TOKEN = "set-me" -- must match API_TOKEN in the VPS .env
-local POLL_INTERVAL = 3 -- seconds between full syncs (bans/announcements/stats)
+local WS_URL = "ws://217.156.65.201:3000/ws?token=85TRJDIO98UTDFIJOUR87YGFDUISUEW8R7YHDFJISW8EU7RYFDJIS8EUEW7892384754839EWIDJFHGYREUIJFV&role=lua" -- VPS api.js; token must match VPS .env API_TOKEN
+local TICK_INTERVAL = 5 -- seconds between live stats posts (Discord board updates ~5s)
 local COMMAND_DELAY = 0.5 -- seconds between dependent commands (:uncape before :cape)
 local CAPE_REAPPLY_INTERVAL = 1 -- seconds; re-applies the cape to the current MVP in case they reset and lose it
-local NOTIFY_INTERVAL = 30 -- seconds between :n notify messages (separate from the sync)
+local NOTIFY_INTERVAL = 30 -- seconds between :n notify messages
 
 -- The command bar number changes every server update.
 -- Get it manually, then update commandbarnum here and re-execute.
@@ -25,97 +25,137 @@ local function getRemote()
   return game:GetService("ReplicatedStorage")["b\007\010\007\010\007"]
 end
 
-local function get(url)
-  local t0 = os.clock()
-  local res = request({
-    Url = url,
-    Method = "GET",
-    Timeout = 2,
-    Headers = {
-      ["x-api-token"] = API_TOKEN,
-    },
-  })
-  local ms = math.floor((os.clock() - t0) * 1000)
-  if not res then
-    warn("[Overclock] GET (" .. ms .. "ms) nil response: " .. url)
-    return nil
+local ws = nil
+local connected = false
+local reconnecting = false
+local warnedOffline = false
+local banned = {}
+local wasOnline = {}
+local lastAnnouncementId = 0
+local lastCommandId = 0
+local currentMvp = nil
+local lastNotify = 0
+
+local function fire(cmd)
+  local ok, err = pcall(function()
+    getRemote():FireServer(commandbarnum, cmd)
+  end)
+  if ok then
+    log("fire: \"" .. cmd .. "\"")
+  else
+    warn("[Overclock] fire failed: " .. tostring(err))
   end
-  if not res.Success then
-    warn("[Overclock] GET (" .. ms .. "ms) failed (" .. tostring(res.StatusCode) .. "): " .. url)
-    return nil
-  end
-  log("GET (" .. ms .. "ms): " .. url)
-  return HttpService:JSONDecode(res.Body)
 end
 
-local function post(url, body)
-  local t0 = os.clock()
-  local res = request({
-    Url = url,
-    Method = "POST",
-    Timeout = 2,
-    Headers = {
-      ["x-api-token"] = API_TOKEN,
-      ["Content-Type"] = "application/json",
-    },
-    Body = HttpService:JSONEncode(body),
-  })
-  local ms = math.floor((os.clock() - t0) * 1000)
-  if not res or not res.Success then
-    warn("[Overclock] POST (" .. ms .. "ms) failed (" .. tostring(res and res.StatusCode or "no response") .. "): " .. url)
-    return false
+-- fires "cmd|ms|cmd|ms" sequences from the command queue, e.g. ":freaky 255 255 255|1000|:freaky 0 0 0"
+local function fireSequence(seq)
+  for part in string.gmatch(seq, "[^|]+") do
+    local trimmed = part:gsub("^%s+", ""):gsub("%s+$", "")
+    local ms = tonumber(trimmed)
+    if ms then
+      task.wait(ms / 1000)
+    elseif #trimmed > 0 then
+      fire(trimmed)
+    end
   end
-  log("POST (" .. ms .. "ms): " .. url)
-  return true
 end
 
-local function fetchBannedNames()
-  local data = get(BASE_URL .. "/bans")
-  if not data then
-    warn("[Overclock] fetchBannedNames: no data")
-    return {}
+local function setBans(list)
+  banned = {}
+  if type(list) == "table" then
+    for _, row in ipairs(list) do
+      if row and row.name then banned[row.name] = true end
+    end
   end
-  local names = {}
-  for _, row in ipairs(data) do names[row.name] = true end
-  log("fetchBannedNames: " .. #data .. " bans loaded")
-  return names
+  local n = 0
+  for _ in pairs(banned) do n = n + 1 end
+  log("bans updated: " .. n .. " banned")
 end
 
-local function fetchLatestAnnouncement()
-  local data = get(BASE_URL .. "/announcements/latest")
-  if not data or not data.id or data.id == 0 then
-    log("fetchLatestAnnouncement: none")
-    return nil
+local function handleMessage(raw)
+  local ok, msg = pcall(function()
+    return HttpService:JSONDecode(raw)
+  end)
+  if not ok or type(msg) ~= "table" or not msg.type then return end
+
+  if msg.type == "init" then
+    connected = true
+    setBans(msg.bans)
+    if msg.announcement and msg.announcement.id then
+      lastAnnouncementId = msg.announcement.id
+    end
+    if msg.command and msg.command.id then
+      lastCommandId = msg.command.id
+    end
+    log("Connected (lastAnnounced=" .. lastAnnouncementId .. ", lastCmd=" .. lastCommandId .. ")")
+
+  elseif msg.type == "announcement" and msg.id and msg.text and msg.id > lastAnnouncementId then
+    log("Announcement id=" .. msg.id .. " (last=" .. lastAnnouncementId .. "), announcing")
+    fire(":announce " .. msg.text)
+    lastAnnouncementId = msg.id
+
+  elseif msg.type == "command" and msg.id and msg.command and msg.id > lastCommandId then
+    log("Command id=" .. msg.id .. " (last=" .. lastCommandId .. "), firing")
+    task.spawn(fireSequence, msg.command)
+    lastCommandId = msg.id
+
+  elseif msg.type == "bans" then
+    setBans(msg.bans)
   end
-  log("fetchLatestAnnouncement: id=" .. data.id .. " text=\"" .. data.text .. "\"")
-  return data
 end
 
-local function fetchLatestCommand()
-  local data = get(BASE_URL .. "/commands/latest")
-  if not data or not data.id or data.id == 0 then
-    log("fetchLatestCommand: none")
-    return nil
-  end
-  log("fetchLatestCommand: id=" .. data.id .. " command=\"" .. data.command .. "\"")
-  return data
+local function scheduleReconnect()
+  if reconnecting then return end
+  reconnecting = true
+  task.spawn(function()
+    task.wait(5)
+    reconnecting = false
+    if not connected then
+      log("Reconnecting...")
+      connect()
+    end
+  end)
 end
 
-local function fetchState()
-  local data = get(BASE_URL .. "/snapshot")
-  if not data or not data.data then
-    log("fetchState: no snapshot yet")
-    return nil
-  end
-  local ok, parsed = pcall(function()
-    return HttpService:JSONDecode(data.data)
+function connect()
+  local ok, err = pcall(function()
+    ws = WebSocket.connect(WS_URL)
+    ws.OnMessage:Connect(handleMessage)
+    ws.OnClose:Connect(function()
+      log("WebSocket closed")
+      connected = false
+      ws = nil
+      scheduleReconnect()
+    end)
   end)
   if not ok then
-    warn("[Overclock] fetchState: failed to decode snapshot data")
-    return nil
+    warn("[Overclock] WebSocket connect failed: " .. tostring(err))
+    connected = false
+    ws = nil
+    scheduleReconnect()
   end
-  log("fetchState: last_announced_id=" .. tostring(parsed.last_announced_id))
-  return parsed
+end
+
+local function sendSnapshot(players, mvp)
+  if not connected or not ws then
+    if not warnedOffline then
+      warn("[Overclock] ws not connected - skipping snapshot")
+      warnedOffline = true
+    end
+    return
+  end
+  warnedOffline = false
+  local ok, err = pcall(function()
+    ws:Send(HttpService:JSONEncode({
+      type = "snapshot",
+      data = { players = players, mvp = mvp, ts = os.time() },
+    }))
+  end)
+  if ok then
+    log("Snapshot sent: " .. #players .. " players, mvp=" .. tostring(mvp))
+  else
+    warn("[Overclock] snapshot send failed: " .. tostring(err))
+  end
 end
 
 local function readStat(player, name)
@@ -161,50 +201,8 @@ local function collectPlayers()
   return list, mvp
 end
 
-local function fire(cmd)
-  local ok, err = pcall(function()
-    getRemote():FireServer(commandbarnum, cmd)
-  end)
-  if ok then
-    log("fire: \"" .. cmd .. "\"")
-  else
-    warn("[Overclock] fire failed: " .. tostring(err))
-  end
-end
-
--- fires "cmd|ms|cmd|ms" sequences from the command queue, e.g. ":freaky 255 255 255|1000|:freaky 0 0 0"
-local function fireSequence(seq)
-  for part in string.gmatch(seq, "[^|]+") do
-    local trimmed = part:gsub("^%s+", ""):gsub("%s+$", "")
-    local ms = tonumber(trimmed)
-    if ms then
-      task.wait(ms / 1000)
-    elseif #trimmed > 0 then
-      fire(trimmed)
-    end
-  end
-end
-
-log("Starting Overclock script (commandbarnum=" .. commandbarnum .. ", poll=" .. POLL_INTERVAL .. "s)")
-
-local wasOnline = {}
-local lastAnnouncementId = 0
-local lastCommandId = 0
-local currentMvp = nil
-local lastNotify = 0
-
--- resume from persisted state so restarts never replay old announcements
-local ok0, state = pcall(fetchState)
-if ok0 and state then
-  if state.last_announced_id then
-    lastAnnouncementId = state.last_announced_id
-    log("Resumed lastAnnouncementId=" .. lastAnnouncementId)
-  end
-  if state.last_command_id then
-    lastCommandId = state.last_command_id
-    log("Resumed lastCommandId=" .. lastCommandId)
-  end
-end
+log("Starting Overclock script (tick=" .. TICK_INTERVAL .. "s)")
+connect()
 
 -- re-apply the cape to the current MVP every second (they lose it on reset),
 -- so the cape is always on exactly one player: the MVP
@@ -217,10 +215,8 @@ task.spawn(function()
   end
 end)
 
-local iteration = 0
 while true do
-  iteration = iteration + 1
-  log("--- tick " .. iteration .. " (" .. #Players:GetPlayers() .. " players online) ---")
+  log("--- tick (" .. #Players:GetPlayers() .. " players online) ---")
 
   -- 1) live stats + MVP cape posted FIRST so the board always gets fresh data
   local ok3, players, mvp = pcall(function()
@@ -256,59 +252,22 @@ while true do
       log("Notified (mvp=" .. tostring(mvp) .. ")")
     end
 
-    local ok4 = post(
-      BASE_URL .. "/snapshot",
-      HttpService:JSONEncode({ players = players, mvp = mvp, ts = os.time(), last_announced_id = lastAnnouncementId, last_command_id = lastCommandId })
-    )
-    if ok4 then
-      log("Snapshot posted: " .. #players .. " players, mvp=" .. tostring(mvp))
-    else
-      warn("[Overclock] Failed to post live stats")
-    end
+    sendSnapshot(players, mvp)
   else
-    warn("[Overclock] tick " .. iteration .. ": collectPlayers error")
+    warn("[Overclock] tick: collectPlayers error")
   end
 
   -- 2) persistent bans - every tick (re-ban banned players on fresh join)
-  local ok, banned = pcall(fetchBannedNames)
-  if ok and banned then
-    local nowOnline = {}
-    for _, player in ipairs(Players:GetPlayers()) do
-      local name = player.Name
-      nowOnline[name] = true
-      if banned[name] and not wasOnline[name] then
-        fire(":ban " .. player.Name)
-        log("Auto-banned " .. player.Name)
-      end
-    end
-    wasOnline = nowOnline
-  else
-    warn("[Overclock] tick " .. iteration .. ": fetchBannedNames error")
-  end
-
-  -- 3) announcements - every 10th tick (~30s pickup, enough for announcements)
-  if iteration % 10 == 1 then
-    local ok2, ann = pcall(fetchLatestAnnouncement)
-    if ok2 and ann and ann.id and ann.id > lastAnnouncementId then
-      log("New announcement id=" .. ann.id .. " (last=" .. lastAnnouncementId .. "), announcing")
-      fire(":announce " .. ann.text)
-      lastAnnouncementId = ann.id
-    elseif not ok2 then
-      warn("[Overclock] tick " .. iteration .. ": fetchLatestAnnouncement error")
+  local nowOnline = {}
+  for _, player in ipairs(Players:GetPlayers()) do
+    local name = player.Name
+    nowOnline[name] = true
+    if banned[name] and not wasOnline[name] then
+      fire(":ban " .. player.Name)
+      log("Auto-banned " .. player.Name)
     end
   end
+  wasOnline = nowOnline
 
-  -- 4) command queue - every 3rd tick (~9s pickup, flashbang etc.)
-  if iteration % 3 == 1 then
-    local ok2b, cmd = pcall(fetchLatestCommand)
-    if ok2b and cmd and cmd.id and cmd.id > lastCommandId then
-      log("New command id=" .. cmd.id .. " (last=" .. lastCommandId .. "), firing")
-      fireSequence(cmd.command)
-      lastCommandId = cmd.id
-    elseif not ok2b then
-      warn("[Overclock] tick " .. iteration .. ": fetchLatestCommand error")
-    end
-  end
-
-  task.wait(POLL_INTERVAL)
+  task.wait(TICK_INTERVAL)
 end

@@ -11,6 +11,7 @@ const DB_FILE = path.join(__dirname, 'db.json');
 const MAX_BODY = 1024 * 1024;
 const RATE_MAX = 120;
 const RATE_WINDOW_MS = 10000;
+const ALLOWED_ROLES = new Set(['lua', 'bot']);
 
 function emptyDB() {
   return {
@@ -21,6 +22,17 @@ function emptyDB() {
   };
 }
 
+// old clients may have stored a double-encoded snapshot string; unwrap it
+function normalizeSnapshot(s) {
+  try {
+    const first = JSON.parse(s);
+    if (typeof first === 'string') return first;
+    return s;
+  } catch {
+    return s;
+  }
+}
+
 function loadDB() {
   try {
     const parsed = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
@@ -29,7 +41,7 @@ function loadDB() {
       bans: Array.isArray(parsed.bans) ? parsed.bans : base.bans,
       announcements: parsed.announcements && Array.isArray(parsed.announcements.rows) ? parsed.announcements : base.announcements,
       commands: parsed.commands && Array.isArray(parsed.commands.rows) ? parsed.commands : base.commands,
-      snapshot: typeof parsed.snapshot === 'string' ? parsed.snapshot : null,
+      snapshot: typeof parsed.snapshot === 'string' ? normalizeSnapshot(parsed.snapshot) : null,
     };
   } catch {
     const base = emptyDB();
@@ -96,25 +108,28 @@ function readBody(req) {
   });
 }
 
-function latest(rowKey, cols) {
-  const rows = db[rowKey].rows;
-  const last = rows[rows.length - 1];
-  if (!last) return Object.fromEntries(cols.map((c) => [c, c === 'id' ? 0 : '']));
-  const out = {};
-  for (const c of cols) out[c] = last[c];
-  return out;
+function lastRow(key) {
+  const rows = db[key].rows;
+  return rows.length ? rows[rows.length - 1] : null;
 }
 
 function parseSnapshot(str) {
   try { return JSON.parse(str); } catch { return null; }
 }
 
-function broadcastSnapshot() {
-  const payload = parseSnapshot(db.snapshot) ?? db.snapshot;
-  const msg = JSON.stringify({ type: 'snapshot', payload });
+function sendToRoles(roles, obj) {
+  const msg = JSON.stringify(obj);
   for (const ws of wss.clients) {
-    if (ws.readyState === ws.OPEN) ws.send(msg);
+    if (ws.readyState === ws.OPEN && roles.includes(ws.role)) ws.send(msg);
   }
+}
+
+function broadcastSnapshot() {
+  sendToRoles(['bot'], { type: 'snapshot', payload: parseSnapshot(db.snapshot) ?? db.snapshot });
+}
+
+function broadcastBans() {
+  sendToRoles(['lua'], { type: 'bans', bans: db.bans });
 }
 
 const server = http.createServer(async (req, res) => {
@@ -147,6 +162,7 @@ const server = http.createServer(async (req, res) => {
       if (i >= 0) { row.created_at = db.bans[i].created_at; db.bans[i] = row; }
       else db.bans.push(row);
       save();
+      broadcastBans();
       console.log(`[api] ban upserted: ${row.name}`);
       return json(res, 200, { ok: true, name: row.name });
     }
@@ -158,6 +174,7 @@ const server = http.createServer(async (req, res) => {
       db.bans = db.bans.filter((b) => b.name.toLowerCase() !== name.toLowerCase());
       save();
       const removed = db.bans.length < before;
+      if (removed) broadcastBans();
       console.log(`[api] ban deleted: ${name} removed=${removed}`);
       return json(res, 200, { ok: true, removed });
     }
@@ -169,12 +186,14 @@ const server = http.createServer(async (req, res) => {
       const row = { id: db.announcements.nextId++, text, created_at: new Date().toISOString() };
       db.announcements.rows.push(row);
       save();
+      sendToRoles(['lua'], { type: 'announcement', id: row.id, text: row.text });
       console.log(`[api] announcement #${row.id}: ${row.text}`);
       return json(res, 200, { id: row.id });
     }
 
     if (p === '/announcements/latest' && m === 'GET') {
-      return json(res, 200, latest('announcements', ['id', 'text']));
+      const last = lastRow('announcements');
+      return json(res, 200, last ? { id: last.id, text: last.text } : { id: 0, text: '' });
     }
 
     if (p === '/commands' && m === 'POST') {
@@ -184,12 +203,14 @@ const server = http.createServer(async (req, res) => {
       const row = { id: db.commands.nextId++, command, created_at: new Date().toISOString() };
       db.commands.rows.push(row);
       save();
+      sendToRoles(['lua'], { type: 'command', id: row.id, command: row.command });
       console.log(`[api] command #${row.id}: ${row.command}`);
       return json(res, 200, { id: row.id });
     }
 
     if (p === '/commands/latest' && m === 'GET') {
-      return json(res, 200, latest('commands', ['id', 'command']));
+      const last = lastRow('commands');
+      return json(res, 200, last ? { id: last.id, command: last.command } : { id: 0, command: '' });
     }
 
     if (p === '/snapshot' && m === 'GET') {
@@ -216,9 +237,32 @@ wss.on('connection', (ws, req) => {
     ws.close(1008, 'unauthorized');
     return;
   }
-  console.log('[api] ws client connected');
-  ws.on('close', () => console.log('[api] ws client disconnected'));
-  if (db.snapshot) {
+  const u = new URL(req.url, 'http://x');
+  const role = u.searchParams.get('role') || 'bot';
+  if (!ALLOWED_ROLES.has(role)) {
+    ws.close(1008, 'invalid role');
+    return;
+  }
+  ws.role = role;
+  console.log(`[api] ws client connected (role=${role})`);
+  ws.on('close', () => console.log(`[api] ws client disconnected (role=${role})`));
+
+  if (role === 'lua') {
+    ws.send(JSON.stringify({
+      type: 'init',
+      bans: db.bans,
+      announcement: lastRow('announcements'),
+      command: lastRow('commands'),
+    }));
+    ws.on('message', (raw) => {
+      let msg;
+      try { msg = JSON.parse(raw.toString()); } catch { return; }
+      if (!msg || msg.type !== 'snapshot' || !msg.data || typeof msg.data !== 'object') return;
+      db.snapshot = JSON.stringify(msg.data);
+      save();
+      broadcastSnapshot();
+    });
+  } else if (db.snapshot) {
     ws.send(JSON.stringify({ type: 'snapshot', payload: parseSnapshot(db.snapshot) ?? db.snapshot }));
   }
 });
